@@ -8,6 +8,8 @@ import (
 	"github.com/hawthorne/bff-api-go-collections-get-loans/internal/infrastructure/config"
 	"github.com/hawthorne/bff-api-go-collections-get-loans/internal/infrastructure/coreclient"
 	"github.com/hawthorne/bff-api-go-collections-get-loans/internal/infrastructure/cryptobffclient"
+	"github.com/hawthorne/bff-api-go-collections-get-loans/internal/infrastructure/fieldcrypto"
+	"github.com/hawthorne/bff-api-go-collections-get-loans/internal/interface/api"
 	"github.com/hawthorne/bff-api-go-collections-get-loans/internal/interface/api/handler"
 	"github.com/hawthorne/bff-api-go-collections-get-loans/internal/interface/api/middleware"
 )
@@ -17,7 +19,6 @@ func main() {
 
 	// --- Infrastructure ---
 	coreClient := coreclient.NewCoreClient(cfg)
-	cryptoClient := cryptobffclient.NewCryptoBFFClient(cfg)
 
 	// --- Application (Usecases) ---
 	loansUC := usecases.NewLoansUsecase(coreClient)
@@ -32,6 +33,12 @@ func main() {
 	usersH := handler.NewUsersHandler(usersUC)
 	authH := handler.NewAuthHandler()
 	healthH := handler.NewHealthHandler()
+	cryptoSessionStore := fieldcrypto.NewSessionStore(cfg.CryptoSessionTTL)
+	cryptoSessionMgr := fieldcrypto.NewSessionManager(cryptoSessionStore, cfg.CryptoSessionSecret, cfg.CryptoSessionIssuer, cfg.CryptoSessionTTL)
+	cryptoSessionH := handler.NewCryptoSessionHandler(cryptoSessionMgr)
+	auditH := handler.NewAuditHandler(coreClient)
+	cryptoBffClient := cryptobffclient.NewCryptoBFFClient(cfg)
+	contactsH := handler.NewContactsHandler(coreClient, cryptoBffClient)
 
 	// --- Router ---
 	r := gin.New()
@@ -40,10 +47,10 @@ func main() {
 	r.Use(middleware.TracingMiddleware())
 	r.Use(middleware.CognitoContextMiddleware())
 	r.Use(middleware.AuditMiddleware())
-	r.Use(middleware.CryptoMiddleware(cfg.CryptoEnabled, cryptoClient.NewCryptoClient(cfg.CryptoBFFBaseURL)))
+	r.Use(middleware.CryptoMiddleware(cfg.CryptoEnabled, middleware.NewCryptoClient(cfg.CryptoBFFBaseURL)))
 
 	// Register all API routes
-	handler.RegisterRoutes(r, loansH, clientsH, strategyH, usersH, authH, healthH)
+	api.RegisterRoutes(r, loansH, clientsH, strategyH, usersH, authH, healthH, cryptoSessionH, auditH, contactsH)
 
 	port := cfg.Port
 	if port == "" {

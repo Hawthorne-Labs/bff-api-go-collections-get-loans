@@ -1,0 +1,4 @@
+bin/
+*.bak
+*.tidy
+.qoder/

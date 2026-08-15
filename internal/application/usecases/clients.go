@@ -17,15 +17,15 @@ func NewClientsUsecase(core *coreclient.CoreClient) *ClientsUsecase {
 	return &ClientsUsecase{core: core}
 }
 
-// ListParams holds the query parameters for client listing.
-type ListParams struct {
+// ClientListParams holds the query parameters for client listing.
+type ClientListParams struct {
 	Search string
 	Limit  int
 	Offset int
 }
 
 // ListClients lists the client directory with pagination and search.
-func (u *ClientsUsecase) ListClients(ctx context.Context, traceID, tenantID, userEmail string, params ListParams) (map[string]any, error) {
+func (u *ClientsUsecase) ListClients(ctx context.Context, traceID, tenantID, userEmail string, params ClientListParams) (map[string]any, error) {
 	queryParams := map[string]string{
 		"limit":  fmt.Sprintf("%d", params.Limit),
 		"offset": fmt.Sprintf("%d", params.Offset),

@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -34,15 +36,12 @@ func TracingMiddleware() gin.HandlerFunc {
 
 		// Log request
 		status := c.Writer.Status()
-		c.Logger().Info("request completed",
-			gin.LogFields{
-				{Key: "trace_id", Value: traceID},
-				{Key: "method", Value: c.Request.Method},
-				{Key: "path", Value: c.Request.URL.Path},
-				{Key: "status", Value: status},
-				{Key: "latency", Value: c.Writer.Elapsed()},
-				{Key: "ip", Value: c.ClientIP()},
-			},
+		slog.InfoContext(c.Request.Context(), "request completed",
+			slog.String("trace_id", traceID),
+			slog.String("method", c.Request.Method),
+			slog.String("path", c.Request.URL.Path),
+			slog.Int("status", status),
+			slog.String("ip", c.ClientIP()),
 		)
 
 		_ = traceID // used above for logging
@@ -51,5 +50,5 @@ func TracingMiddleware() gin.HandlerFunc {
 
 func generateTraceID() string {
 	// Simple trace ID generation — in production use a proper UUID or trace ID generator
-	return fmt.Sprintf("trace-%d", fmt.Shash(0))
+	return fmt.Sprintf("trace-%d", time.Now().UnixNano())
 }

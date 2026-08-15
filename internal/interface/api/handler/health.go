@@ -18,3 +18,13 @@ func NewHealthHandler() *HealthHandler {
 func (h *HealthHandler) Check(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
+
+// Liveness handles GET /health/live
+func (h *HealthHandler) Liveness(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"status": "live"})
+}
+
+// Readiness handles GET /health/ready
+func (h *HealthHandler) Readiness(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"status": "ready"})
+}

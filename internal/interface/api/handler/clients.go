@@ -37,7 +37,7 @@ func (h *ClientsHandler) ListClients(c *gin.Context) {
 		limit = 50
 	}
 
-	params := usecases.ListParams{
+	params := usecases.ClientListParams{
 		Search: c.Query("search"),
 		Limit:  limit,
 		Offset: offset,

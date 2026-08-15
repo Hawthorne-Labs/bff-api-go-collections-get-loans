@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -32,26 +33,22 @@ func AuditMiddleware() gin.HandlerFunc {
 
 		// Log audit event for mutations
 		if status >= 200 && status < 400 {
-			c.Logger().Info("audit: mutation successful",
-				gin.LogFields{
-					{Key: "trace_id", Value: traceID},
-					{Key: "user", Value: userEmail},
-					{Key: "method", Value: method},
-					{Key: "path", Value: c.Request.URL.Path},
-					{Key: "status", Value: status},
-					{Key: "latency_ms", Value: elapsed.Milliseconds()},
-				},
+			slog.InfoContext(c.Request.Context(), "audit: mutation successful",
+				slog.String("trace_id", traceID),
+				slog.String("user", userEmail),
+				slog.String("method", method),
+				slog.String("path", c.Request.URL.Path),
+				slog.Int("status", status),
+				slog.Int64("latency_ms", elapsed.Milliseconds()),
 			)
 		} else if status >= 400 {
-			c.Logger().Warn("audit: mutation failed",
-				gin.LogFields{
-					{Key: "trace_id", Value: traceID},
-					{Key: "user", Value: userEmail},
-					{Key: "method", Value: method},
-					{Key: "path", Value: c.Request.URL.Path},
-					{Key: "status", Value: status},
-					{Key: "latency_ms", Value: elapsed.Milliseconds()},
-				},
+			slog.WarnContext(c.Request.Context(), "audit: mutation failed",
+				slog.String("trace_id", traceID),
+				slog.String("user", userEmail),
+				slog.String("method", method),
+				slog.String("path", c.Request.URL.Path),
+				slog.Int("status", status),
+				slog.Int64("latency_ms", elapsed.Milliseconds()),
 			)
 		}
 	}

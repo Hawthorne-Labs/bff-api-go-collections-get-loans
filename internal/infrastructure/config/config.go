@@ -27,13 +27,16 @@ type Config struct {
 	WarmupUserEmail       string
 	LogLevel              string
 	OTELServiceName       string
+	CryptoSessionSecret   string
+	CryptoSessionIssuer   string
+	CryptoSessionTTL      int
 }
 
 // Load reads configuration from environment variables with sensible defaults.
 func Load() *Config {
 	return &Config{
 		Port:                  getEnvOrDefault("PORT", "8080"),
-		CoreBaseURL:           getEnvOrDefault("CORE_BASE_URL", "http://localhost:9090"),
+		CoreBaseURL:           getEnvOrDefault("CORE_BASE_URL", getEnvOrDefault("API_BASE_URL", "http://localhost:9090")),
 		CryptoBFFBaseURL:      getEnvOrDefault("CRYPTO_BFF_BASE_URL", "http://localhost:8081"),
 		CryptoEnabled:         isTrueEnv("CRYPTO_ENABLED"),
 		RequestTimeoutSeconds: getEnvIntOrDefault("REQUEST_TIMEOUT_SECONDS", 30),
@@ -53,6 +56,9 @@ func Load() *Config {
 		WarmupUserEmail:       getEnvOrDefault("WARMUP_USER_EMAIL", ""),
 		LogLevel:              getEnvOrDefault("LOG_LEVEL", "info"),
 		OTELServiceName:       getEnvOrDefault("OTEL_SERVICE_NAME", "bff-api-go-collections-get-loans"),
+		CryptoSessionSecret:   getEnvOrDefault("CRYPTO_SESSION_TOKEN_SECRET", getEnvOrDefault("INTERNAL_JWT_SECRET", "dev-internal-jwt-secret-32-bytes-min")),
+		CryptoSessionIssuer:   getEnvOrDefault("CRYPTO_SESSION_ISSUER", "hawthorne-bff"),
+		CryptoSessionTTL:      getEnvIntOrDefault("CRYPTO_SESSION_TTL_SECONDS", 900),
 	}
 }
 

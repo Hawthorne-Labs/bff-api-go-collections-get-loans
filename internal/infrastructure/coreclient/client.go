@@ -3,10 +3,14 @@ package coreclient
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -61,13 +65,59 @@ func base64urlEncode(b []byte) string {
 	return s
 }
 
-// NewCoreClient creates a new CoreClient with the given config.
-func NewCoreClient(cfg *config.Config) *CoreClient {
+// mtlsBundle is the JSON structure from MTLS_BUNDLE_JSON secret.
+type mtlsBundle struct {
+	CertificatePEM string `json:"certificate_pem"`
+	PrivateKeyPEM  string `json:"private_key_pem"`
+	TrustBundlePEM string `json:"trust_bundle_pem"`
+}
+
+// loadMtlsTransport builds an HTTP transport with mTLS client identity
+// from the MTLS_BUNDLE_JSON env var. Falls back to plain transport if
+// the env var is not set.
+func loadMtlsTransport() *http.Transport {
 	transport := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
 		IdleConnTimeout:     90 * time.Second,
 	}
+
+	bundleJSON := os.Getenv("MTLS_BUNDLE_JSON")
+	if bundleJSON == "" {
+		log.Println("mTLS: MTLS_BUNDLE_JSON not set, using plain transport")
+		return transport
+	}
+
+	var bundle mtlsBundle
+	if err := json.Unmarshal([]byte(bundleJSON), &bundle); err != nil {
+		log.Printf("mTLS: failed to parse MTLS_BUNDLE_JSON: %v, using plain transport", err)
+		return transport
+	}
+
+	cert, err := tls.X509KeyPair([]byte(bundle.CertificatePEM), []byte(bundle.PrivateKeyPEM))
+	if err != nil {
+		log.Printf("mTLS: failed to load client cert/key: %v, using plain transport", err)
+		return transport
+	}
+
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM([]byte(bundle.TrustBundlePEM)) {
+		log.Println("mTLS: failed to parse trust bundle, using plain transport")
+		return transport
+	}
+
+	transport.TLSClientConfig = &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      caCertPool,
+		MinVersion:   tls.VersionTLS12,
+	}
+	log.Println("mTLS: client identity loaded from MTLS_BUNDLE_JSON")
+	return transport
+}
+
+// NewCoreClient creates a new CoreClient with the given config.
+func NewCoreClient(cfg *config.Config) *CoreClient {
+	transport := loadMtlsTransport()
 
 	client := &http.Client{
 		Transport: transport,
@@ -75,7 +125,10 @@ func NewCoreClient(cfg *config.Config) *CoreClient {
 	}
 
 	// JWT signer uses CORE_JWT_SECRET env var or default
-	secret := getEnvOrDefault("CORE_JWT_SECRET", "dev-secret-change-in-production")
+	secret := os.Getenv("CORE_JWT_SECRET")
+	if secret == "" {
+		secret = "dev-secret-change-in-production"
+	}
 	signer := NewJWTSigner("bff-api", "core-operations", secret)
 
 	return &CoreClient{
@@ -129,6 +182,7 @@ func (c *CoreClient) get(ctx context.Context, path string, headers map[string]st
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		log.Printf("core GET %s failed: %v", path, err)
 		return nil, fmt.Errorf("core GET %s: %w", path, err)
 	}
 	defer resp.Body.Close()
@@ -139,17 +193,85 @@ func (c *CoreClient) get(ctx context.Context, path string, headers map[string]st
 	}
 
 	if resp.StatusCode >= 400 {
+		log.Printf("core GET %s returned %d: %s", path, resp.StatusCode, string(body)[:min(len(body), 200)])
 		return nil, translateCoreError(resp.StatusCode, body)
 	}
 
 	var result map[string]any
 	if len(body) == 0 {
+		log.Printf("core GET %s returned empty body (200)", path)
 		return result, nil
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
+	log.Printf("core GET %s returned 200, body_len=%d", path, len(body))
 	return result, nil
+}
+
+// ForwardGet performs a raw GET to the core, returning the HTTP response.
+// Used for proxy endpoints (audit, etc.) where the body is forwarded as-is.
+func (c *CoreClient) ForwardGet(ctx context.Context, path string, params map[string]string, traceID, requestID, correlationID, traceparent string) (*http.Response, error) {
+	url := c.baseURL + path
+	if len(params) > 0 {
+		queryParts := make([]string, 0, len(params))
+		for k, v := range params {
+			queryParts = append(queryParts, k+"="+v)
+		}
+		url += "?" + strings.Join(queryParts, "&")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	token, _ := c.jwtSigner.Mint(ctx)
+	req.Header.Set("Authorization", "Bearer "+token)
+	if traceID != "" {
+		req.Header.Set("X-Trace-Id", traceID)
+	}
+	if requestID != "" {
+		req.Header.Set("X-Request-Id", requestID)
+	}
+	if correlationID != "" {
+		req.Header.Set("X-Correlation-Id", correlationID)
+	}
+	if traceparent != "" {
+		req.Header.Set("traceparent", traceparent)
+	}
+	return c.httpClient.Do(req)
+}
+
+// ForwardPost performs a raw POST to the core with a JSON body, returning the HTTP response.
+// Used for proxy endpoints where the body needs to be forwarded to core.
+func (c *CoreClient) ForwardPost(ctx context.Context, path string, body any, traceID, tenantID, requestID, correlationID, traceparent string) (*http.Response, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request body: %w", err)
+	}
+	url := c.baseURL + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	token, _ := c.jwtSigner.Mint(ctx)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	if tenantID != "" {
+		req.Header.Set("X-Tenant-Id", tenantID)
+	}
+	if traceID != "" {
+		req.Header.Set("X-Trace-Id", traceID)
+	}
+	if requestID != "" {
+		req.Header.Set("X-Request-Id", requestID)
+	}
+	if correlationID != "" {
+		req.Header.Set("X-Correlation-Id", correlationID)
+	}
+	if traceparent != "" {
+		req.Header.Set("traceparent", traceparent)
+	}
+	return c.httpClient.Do(req)
 }
 
 // post performs an HTTP POST to the core and returns the parsed JSON response.
