@@ -46,7 +46,7 @@ func (u *UsersUsecase) ListMyTenants(ctx context.Context, traceID, tenantID, use
 	return u.core.ListMyTenants(ctx, traceID, tenantID, userEmail)
 }
 
-// ListTenantSyncStatus gets tenant sync status (admin only).
+// ListTenantSyncStatus gets tenant sync status for supervisor, manager, and admin.
 func (u *UsersUsecase) ListTenantSyncStatus(ctx context.Context, traceID, tenantID, userEmail string) (map[string]any, error) {
 	return u.core.ListTenantSyncStatus(ctx, traceID, tenantID, userEmail)
 }

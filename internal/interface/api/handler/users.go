@@ -208,10 +208,10 @@ func (h *UsersHandler) ListMyTenants(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// ListTenantSyncStatus handles GET /api/v1/admin/tenants (admin only)
+// ListTenantSyncStatus handles GET /api/v1/admin/tenants (supervisor, manager, admin).
 func (h *UsersHandler) ListTenantSyncStatus(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
-	if ctx == nil || ctx.Role != "admin" {
+	if ctx == nil || !canViewTenantSyncStatus(ctx.Role) {
 		c.JSON(http.StatusForbidden, gin.H{"error": map[string]any{"code": domain.AccessDenied, "message": "No tiene permisos para realizar esta acción."}})
 		return
 	}
@@ -254,6 +254,15 @@ func (h *UsersHandler) RecordLastLogin(c *gin.Context) {
 	}
 
 	c.Status(http.StatusNoContent)
+}
+
+func canViewTenantSyncStatus(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "admin", "supervisor", "manager":
+		return true
+	default:
+		return false
+	}
 }
 
 // unescapeParam URL-decodes a path parameter

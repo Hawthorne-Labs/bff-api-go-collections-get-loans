@@ -506,7 +506,7 @@ func (c *CoreClient) ListMyTenants(ctx context.Context, traceID, tenantID, userE
 	return c.get(ctx, "/internal/v1/me/tenants", headers, nil)
 }
 
-// ListTenantSyncStatus gets tenant sync status (admin only).
+// ListTenantSyncStatus gets tenant sync status for supervisor, manager, and admin.
 func (c *CoreClient) ListTenantSyncStatus(ctx context.Context, traceID, tenantID, userEmail string) (map[string]any, error) {
 	headers, err := c.authHeaders(ctx, traceID, tenantID, userEmail)
 	if err != nil {
