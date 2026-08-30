@@ -3,6 +3,12 @@ package api
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/hawthorne/bff-api-go-collections-get-loans/internal/interface/api/handler"
+	"github.com/hawthorne/bff-api-go-collections-get-loans/internal/interface/api/middleware"
+)
+
+var (
+	supervisorAdmin = []string{"supervisor", "manager", "admin"}
+	adminOnly       = []string{"admin"}
 )
 
 // RegisterRoutes registers all API routes on the Gin engine.
@@ -12,6 +18,7 @@ func RegisterRoutes(
 	clients *handler.ClientsHandler,
 	strategy *handler.StrategyHandler,
 	users *handler.UsersHandler,
+	roles *handler.RolesHandler,
 	auth *handler.AuthHandler,
 	health *handler.HealthHandler,
 	cryptoSession *handler.CryptoSessionHandler,
@@ -30,42 +37,84 @@ func RegisterRoutes(
 	r.GET("/api/v1/auth/me", auth.Me)
 	r.POST("/api/v1/auth/dev-login", auth.DevLogin)
 
+	readScope := middleware.RequireScope("collections:read")
+	anyRole := middleware.RequireAuthenticatedRole()
+	mandoRoles := middleware.RequireRole(supervisorAdmin...)
+	adminRole := middleware.RequireRole(adminOnly...)
+
 	// Auth internal routes
-	r.POST("/api/v1/auth/last-login", users.RecordLastLogin)
-	r.GET("/api/v1/auth/permissions", users.GetMyPermissions)
+	authInternal := r.Group("/api/v1/auth")
+	authInternal.Use(readScope, anyRole)
+	{
+		authInternal.POST("/last-login", users.RecordLastLogin)
+		authInternal.GET("/permissions", users.GetMyPermissions)
+	}
 
-	// Admin routes (users)
-	r.GET("/api/v1/admin/users", users.ListUsers)
-	r.POST("/api/v1/admin/users", users.CreateUser)
-	r.PUT("/api/v1/admin/users/:email", users.UpdateUser)
-	r.PATCH("/api/v1/admin/users/:email", users.UpdateUser)
-	r.POST("/api/v1/admin/users/:email/reset-password", users.ResetPassword)
-	r.GET("/api/v1/admin/tenants", users.ListTenantSyncStatus)
+	// Admin routes (users + roles) — admin only
+	admin := r.Group("/api/v1/admin")
+	admin.Use(readScope, adminRole)
+	{
+		admin.GET("/users", users.ListUsers)
+		admin.POST("/users", users.CreateUser)
+		admin.PUT("/users/:userId", users.UpdateUser)
+		admin.PATCH("/users/:userId", users.UpdateUser)
+		admin.POST("/users/:userId/reset-password", users.ResetPassword)
 
-	// Crypto session handshake (proxied to crypto-bff)
-	r.POST("/api/v1/collections/crypto-session", cryptoSession.Handshake)
+		if roles != nil {
+			admin.GET("/roles", roles.ListRoles)
+			admin.GET("/roles/:code", roles.GetRole)
+			admin.POST("/roles", roles.CreateRole)
+			admin.PATCH("/roles/:code", roles.UpdateRole)
+			admin.PUT("/roles/:code/permissions", roles.ReplacePermissions)
+			admin.GET("/permissions", roles.ListPermissions)
+		}
+	}
 
-	// User info
-	r.GET("/api/v1/collections/me/permissions", users.GetMyPermissions)
-	r.GET("/api/v1/collections/me/tenants", users.ListMyTenants)
+	// Tenant sync status — supervisor/manager/admin (Python _SUPERVISOR_ADMIN)
+	adminMando := r.Group("/api/v1/admin")
+	adminMando.Use(readScope, mandoRoles)
+	{
+		adminMando.GET("/tenants", users.ListTenantSyncStatus)
+	}
 
-	// Clients routes
-	r.GET("/api/v1/collections/clients", clients.ListClients)
-	r.GET("/api/v1/collections/clients/at-risk", clients.ListAtRisk)
-	r.GET("/api/v1/collections/clients/contacts", clients.ListClientContacts)
+	// Crypto session handshake (local ECDH / FLE)
+	r.POST("/api/v1/collections/crypto-session", readScope, anyRole, cryptoSession.Handshake)
 
-	// Loans routes (core business)
-	r.GET("/api/v1/collections/loans", loans.ListLoans)
-	r.GET("/api/v1/collections/loans/:loanId", loans.GetLoan)
-	r.GET("/api/v1/collections/loans/:loanId/balance", loans.GetLoanBalance)
-	r.GET("/api/v1/collections/loans/:loanId/installments", loans.GetLoanInstallments)
-	r.GET("/api/v1/collections/loans/:loanId/statement", loans.GetLoanStatement)
+	collections := r.Group("/api/v1/collections")
+	collections.Use(readScope, anyRole)
+	{
+		// User info
+		collections.GET("/me/permissions", users.GetMyPermissions)
+		collections.GET("/me/tenants", users.ListMyTenants)
 
-	// Strategy routes
-	r.GET("/api/v1/collections/strategy/segmentation", strategy.GetSegmentation)
-	r.GET("/api/v1/collections/strategy/assignments", strategy.ListAssignments)
-	r.POST("/api/v1/collections/strategy/assignments", strategy.CreateAssignment)
-	r.POST("/api/v1/collections/strategy/clean", strategy.CleanQueue)
+		// Clients routes
+		collections.GET("/clients", clients.ListClients)
+		collections.GET("/clients/contacts", clients.ListClientContacts)
+
+		// Loans routes (core business)
+		collections.GET("/loans", loans.ListLoans)
+		collections.GET("/loans/:loanId", loans.GetLoan)
+		collections.GET("/loans/:loanId/balance", loans.GetLoanBalance)
+		collections.GET("/loans/:loanId/installments", loans.GetLoanInstallments)
+		collections.GET("/loans/:loanId/statement", loans.GetLoanStatement)
+	}
+
+	// At-risk + strategy — supervisor/manager/admin (Python _SUPERVISOR_ADMIN)
+	mandoCollections := r.Group("/api/v1/collections")
+	mandoCollections.Use(readScope, mandoRoles)
+	{
+		mandoCollections.GET("/clients/at-risk", clients.ListAtRisk)
+	}
+
+	// Strategy routes — supervisor/manager/admin (Python _SUPERVISOR_ADMIN)
+	strategyGroup := r.Group("/api/v1/collections/strategy")
+	strategyGroup.Use(readScope, mandoRoles)
+	{
+		strategyGroup.GET("/segmentation", strategy.GetSegmentation)
+		strategyGroup.GET("/assignments", strategy.ListAssignments)
+		strategyGroup.POST("/assignments", strategy.CreateAssignment)
+		strategyGroup.POST("/clean", strategy.CleanQueue)
+	}
 
 	// M2M (machine-to-machine)
 	r.GET("/api/m2m/whoami", handler.M2MWhoami)

@@ -10,59 +10,75 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/hawthorne/bff-api-go-collections-get-loans/internal/infrastructure/config"
+	"github.com/hawthorne/bff-api-go-collections-get-loans/internal/infrastructure/security"
 )
 
-// CoreClient is an HTTP client for the collections-operations core.
+// CoreClient is an HTTP client for the collections-management core.
 // It owns an http.Client with connection pooling and an internal JWT signer.
 type CoreClient struct {
 	baseURL    string
 	httpClient *http.Client
-	jwtSigner  *JWTSigner
+	jwtSigner  *security.InternalJWTSigner
+	audience   string
+	subject    string
 }
 
-// JWTSigner mints internal JWTs for BFF→Core auth.
-type JWTSigner struct {
-	issuer   string
-	audience string
-	secret   string
-	ttl      time.Duration
-}
-
-// NewJWTSigner creates a JWT signer using HS256 with the given secret.
-func NewJWTSigner(issuer, audience, secret string) *JWTSigner {
-	return &JWTSigner{
-		issuer:   issuer,
-		audience: audience,
-		secret:   secret,
-		ttl:      5 * time.Minute,
+// NewMtlsHTTPClient returns an HTTP client using the task mTLS bundle when present.
+func NewMtlsHTTPClient(timeout time.Duration) *http.Client {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	return &http.Client{
+		Transport: loadMtlsTransport(),
+		Timeout:   timeout,
 	}
 }
 
-// Mint creates a new internal JWT token.
-func (s *JWTSigner) Mint(ctx context.Context) (string, error) {
-	// Simplified JWT: in production, use a proper JWT library.
-	// This is a placeholder that generates a pseudo-token for now.
-	// The real implementation should use github.com/golang-jwt/jwt/v5
-	iat := time.Now().Unix()
-	exp := iat + int64(s.ttl.Seconds())
-	payload := fmt.Sprintf(`{"iss":"%s","aud":"%s","iat":%d,"exp":%d,"sub":"bff-api"}`,
-		s.issuer, s.audience, iat, exp)
-	// Simple base64 encoding (placeholder — replace with real JWT library)
-	token := fmt.Sprintf("INTERNAL.%s", base64urlEncode([]byte(payload)))
-	return token, nil
+// NewCoreClient creates a new CoreClient with the given config.
+func NewCoreClient(cfg *config.Config) *CoreClient {
+	client := NewMtlsHTTPClient(time.Duration(cfg.RequestTimeoutSeconds) * time.Second)
+
+	// anti-regresion: BUG-1006 ver handoffs/regressions.md (no revertir sin leer)
+	secret := cfg.InternalJWTSecret
+	issuer := cfg.InternalJWTIssuer
+	audience := cfg.InternalJWTCoreAudience
+	signer := security.NewInternalJWTSigner(secret, issuer, cfg.InternalJWTActiveKID, 5*time.Minute)
+
+	return &CoreClient{
+		baseURL:    cfg.CoreBaseURL,
+		httpClient: client,
+		jwtSigner:  signer,
+		audience:   audience,
+		subject:    "bff-api",
+	}
 }
 
-func base64urlEncode(b []byte) string {
-	s := string(b)
-	s = strings.ReplaceAll(s, "+", "-")
-	s = strings.ReplaceAll(s, "/", "_")
-	s = strings.ReplaceAll(s, "=", "")
-	return s
+// GetToken mints a new internal JWT without actor scope.
+func (c *CoreClient) GetToken(_ context.Context) (string, error) {
+	return c.jwtSigner.Mint(c.audience, c.subject, "")
+}
+
+// authHeaders returns the standard Authorization + tracing headers for core requests.
+func (c *CoreClient) authHeaders(_ context.Context, traceID, tenantID, userEmail string) (map[string]string, error) {
+	token, err := c.jwtSigner.Mint(c.audience, c.subject, userEmail)
+	if err != nil {
+		return nil, err
+	}
+
+	headers := map[string]string{
+		"Authorization": "Bearer " + token,
+		"X-Trace-Id":    traceID,
+		"X-Tenant-Id":   tenantID,
+	}
+	if userEmail != "" {
+		headers["X-User-Email"] = userEmail
+	}
+	return headers, nil
 }
 
 // mtlsBundle is the JSON structure from MTLS_BUNDLE_JSON secret.
@@ -115,64 +131,23 @@ func loadMtlsTransport() *http.Transport {
 	return transport
 }
 
-// NewCoreClient creates a new CoreClient with the given config.
-func NewCoreClient(cfg *config.Config) *CoreClient {
-	transport := loadMtlsTransport()
-
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   time.Duration(cfg.RequestTimeoutSeconds) * time.Second,
+// encodeQuery builds a stable, percent-encoded query string.
+// anti-regresion: BUG-1010 — raw concat broke phone search with spaces (+504 9xxx) → Core 400 → BFF 502.
+func encodeQuery(params map[string]string) string {
+	if len(params) == 0 {
+		return ""
 	}
-
-	// JWT signer uses CORE_JWT_SECRET env var or default
-	secret := os.Getenv("CORE_JWT_SECRET")
-	if secret == "" {
-		secret = "dev-secret-change-in-production"
+	values := url.Values{}
+	for k, v := range params {
+		values.Set(k, v)
 	}
-	signer := NewJWTSigner("bff-api", "core-operations", secret)
-
-	return &CoreClient{
-		baseURL:    cfg.CoreBaseURL,
-		httpClient: client,
-		jwtSigner:  signer,
-	}
-}
-
-// GetToken mints a new internal JWT.
-func (c *CoreClient) GetToken(ctx context.Context) (string, error) {
-	return c.jwtSigner.Mint(ctx)
-}
-
-// authHeaders returns the standard Authorization + tracing headers for core requests.
-func (c *CoreClient) authHeaders(ctx context.Context, traceID, tenantID, userEmail string) (map[string]string, error) {
-	token, err := c.jwtSigner.Mint(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	headers := map[string]string{
-		"Authorization": "Bearer " + token,
-		"X-Trace-Id":    traceID,
-		"X-Tenant-Id":   tenantID,
-	}
-	if userEmail != "" {
-		headers["X-User-Email"] = userEmail
-	}
-	return headers, nil
+	return "?" + values.Encode()
 }
 
 // get performs an HTTP GET to the core and returns the parsed JSON response.
 func (c *CoreClient) get(ctx context.Context, path string, headers map[string]string, params map[string]string) (map[string]any, error) {
-	url := c.baseURL + path
-	query := ""
-	if len(params) > 0 {
-		queryParts := make([]string, 0, len(params))
-		for k, v := range params {
-			queryParts = append(queryParts, k+"="+v)
-		}
-		query = "?" + strings.Join(queryParts, "&")
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+query, nil)
+	reqURL := c.baseURL + path + encodeQuery(params)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -212,19 +187,15 @@ func (c *CoreClient) get(ctx context.Context, path string, headers map[string]st
 // ForwardGet performs a raw GET to the core, returning the HTTP response.
 // Used for proxy endpoints (audit, etc.) where the body is forwarded as-is.
 func (c *CoreClient) ForwardGet(ctx context.Context, path string, params map[string]string, traceID, requestID, correlationID, traceparent string) (*http.Response, error) {
-	url := c.baseURL + path
-	if len(params) > 0 {
-		queryParts := make([]string, 0, len(params))
-		for k, v := range params {
-			queryParts = append(queryParts, k+"="+v)
-		}
-		url += "?" + strings.Join(queryParts, "&")
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	reqURL := c.baseURL + path + encodeQuery(params)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
-	token, _ := c.jwtSigner.Mint(ctx)
+	token, err := c.jwtSigner.Mint(c.audience, c.subject, "")
+	if err != nil {
+		return nil, fmt.Errorf("mint internal jwt: %w", err)
+	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	if traceID != "" {
 		req.Header.Set("X-Trace-Id", traceID)
@@ -253,7 +224,10 @@ func (c *CoreClient) ForwardPost(ctx context.Context, path string, body any, tra
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
-	token, _ := c.jwtSigner.Mint(ctx)
+	token, err := c.jwtSigner.Mint(c.audience, c.subject, "")
+	if err != nil {
+		return nil, fmt.Errorf("mint internal jwt: %w", err)
+	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	if tenantID != "" {
@@ -317,12 +291,21 @@ func (c *CoreClient) post(ctx context.Context, path string, headers map[string]s
 
 // patch performs an HTTP PATCH to the core and returns the parsed JSON response.
 func (c *CoreClient) patch(ctx context.Context, path string, headers map[string]string, body any) (map[string]any, error) {
+	return c.writeJSON(ctx, http.MethodPatch, path, headers, body)
+}
+
+// put performs an HTTP PUT to the core and returns the parsed JSON response.
+func (c *CoreClient) put(ctx context.Context, path string, headers map[string]string, body any) (map[string]any, error) {
+	return c.writeJSON(ctx, http.MethodPut, path, headers, body)
+}
+
+func (c *CoreClient) writeJSON(ctx context.Context, method, path string, headers map[string]string, body any) (map[string]any, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request body: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.baseURL+path, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(payload))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -333,7 +316,7 @@ func (c *CoreClient) patch(ctx context.Context, path string, headers map[string]
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("core PATCH %s: %w", path, err)
+		return nil, fmt.Errorf("core %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 
@@ -399,21 +382,21 @@ func (c *CoreClient) ListLoans(ctx context.Context, traceID, tenantID, userEmail
 }
 
 // GetLoan gets full loan detail (with nested client/vehicle/paymentPromises).
-func (c *CoreClient) GetLoan(ctx context.Context, loanID, traceID, tenantID, userEmail string) (map[string]any, error) {
+func (c *CoreClient) GetLoan(ctx context.Context, loanID, traceID, tenantID, userEmail string, params map[string]string) (map[string]any, error) {
 	headers, err := c.authHeaders(ctx, traceID, tenantID, userEmail)
 	if err != nil {
 		return nil, err
 	}
-	return c.get(ctx, "/internal/v1/loans/"+loanID, headers, nil)
+	return c.get(ctx, "/internal/v1/loans/"+loanID, headers, params)
 }
 
 // GetLoanBalance gets loan balance breakdown (capital vencido, intereses, mora).
-func (c *CoreClient) GetLoanBalance(ctx context.Context, loanID, traceID, tenantID, userEmail string) (map[string]any, error) {
+func (c *CoreClient) GetLoanBalance(ctx context.Context, loanID, traceID, tenantID, userEmail string, params map[string]string) (map[string]any, error) {
 	headers, err := c.authHeaders(ctx, traceID, tenantID, userEmail)
 	if err != nil {
 		return nil, err
 	}
-	return c.get(ctx, "/internal/v1/loans/"+loanID+"/balance", headers, nil)
+	return c.get(ctx, "/internal/v1/loans/"+loanID+"/balance", headers, params)
 }
 
 // GetLoanInstallments gets loan installments plan (amortization schedule, paged).
@@ -581,4 +564,66 @@ func (c *CoreClient) GetLoanStatement(ctx context.Context, loanID, traceID, tena
 		return nil, err
 	}
 	return c.get(ctx, "/internal/v1/loans/"+loanID+"/statement", headers, params)
+}
+
+// ListRoles lists application roles (admin).
+func (c *CoreClient) ListRoles(ctx context.Context, traceID, tenantID, userEmail string, activeOnly bool) (map[string]any, error) {
+	headers, err := c.authHeaders(ctx, traceID, tenantID, userEmail)
+	if err != nil {
+		return nil, err
+	}
+	params := map[string]string{}
+	if activeOnly {
+		params["active"] = "true"
+	}
+	return c.get(ctx, "/internal/v1/roles", headers, params)
+}
+
+// GetRole gets one application role by code (admin).
+func (c *CoreClient) GetRole(ctx context.Context, code, traceID, tenantID, userEmail string) (map[string]any, error) {
+	headers, err := c.authHeaders(ctx, traceID, tenantID, userEmail)
+	if err != nil {
+		return nil, err
+	}
+	return c.get(ctx, "/internal/v1/roles/"+code, headers, nil)
+}
+
+// CreateRole creates an application role (admin).
+func (c *CoreClient) CreateRole(ctx context.Context, traceID, tenantID, userEmail string, body map[string]any) (map[string]any, error) {
+	headers, err := c.authHeaders(ctx, traceID, tenantID, userEmail)
+	if err != nil {
+		return nil, err
+	}
+	return c.post(ctx, "/internal/v1/roles", headers, body)
+}
+
+// UpdateRole patches an application role (admin).
+func (c *CoreClient) UpdateRole(ctx context.Context, code, traceID, tenantID, userEmail string, body map[string]any) (map[string]any, error) {
+	headers, err := c.authHeaders(ctx, traceID, tenantID, userEmail)
+	if err != nil {
+		return nil, err
+	}
+	return c.patch(ctx, "/internal/v1/roles/"+code, headers, body)
+}
+
+// ReplaceRolePermissions replaces the permission set for a role (admin).
+func (c *CoreClient) ReplaceRolePermissions(ctx context.Context, code, traceID, tenantID, userEmail string, body map[string]any) (map[string]any, error) {
+	headers, err := c.authHeaders(ctx, traceID, tenantID, userEmail)
+	if err != nil {
+		return nil, err
+	}
+	return c.put(ctx, "/internal/v1/roles/"+code+"/permissions", headers, body)
+}
+
+// ListPermissions lists the permission catalog (admin).
+func (c *CoreClient) ListPermissions(ctx context.Context, traceID, tenantID, userEmail, module string) (map[string]any, error) {
+	headers, err := c.authHeaders(ctx, traceID, tenantID, userEmail)
+	if err != nil {
+		return nil, err
+	}
+	params := map[string]string{}
+	if module != "" {
+		params["module"] = module
+	}
+	return c.get(ctx, "/internal/v1/permissions", headers, params)
 }

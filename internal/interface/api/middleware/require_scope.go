@@ -1,45 +1,57 @@
 package middleware
 
 import (
+	"net/http"
+	"strings"
+
 	"github.com/gin-gonic/gin"
+
+	"github.com/hawthorne/bff-api-go-collections-get-loans/internal/domain"
 )
 
-// RequireScopeMiddleware enforces that the Cognito token includes a required scope.
+// RequireScope enforces that the Cognito token includes a required scope.
 func RequireScope(requiredScope string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := GetCognitoContext(c)
-		if ctx == nil {
-			c.JSON(401, gin.H{"error": map[string]any{"code": 4061, "message": "El token de acceso no es válido."}})
-			c.Abort()
+		if ctx == nil || ctx.Sub == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 			return
 		}
 
 		scopes := splitScope(ctx.Scope)
 		if !hasScope(scopes, requiredScope) {
-			c.JSON(403, gin.H{"error": map[string]any{"code": 4062, "message": "scope '" + requiredScope + "' required"}})
-			c.Abort()
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": map[string]any{"code": domain.AccessDenied, "message": "No tiene permisos para esta operación."}})
 			return
 		}
 		c.Next()
 	}
 }
 
-// RequireRoleMiddleware enforces that the Cognito token includes a role in the allowed set.
+// RequireRole enforces that the Cognito token includes a role in the allowed set.
 func RequireRole(allowedRoles ...string) gin.HandlerFunc {
-	allowed := make(map[string]bool)
+	allowed := make(map[string]bool, len(allowedRoles))
 	for _, r := range allowedRoles {
 		allowed[r] = true
 	}
 	return func(c *gin.Context) {
 		ctx := GetCognitoContext(c)
-		if ctx == nil {
-			c.JSON(401, gin.H{"error": map[string]any{"code": 4061, "message": "El token de acceso no es válido."}})
-			c.Abort()
+		if ctx == nil || ctx.Sub == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 			return
 		}
 		if !allowed[ctx.Role] {
-			c.JSON(403, gin.H{"error": map[string]any{"code": 4062, "message": "role '" + ctx.Role + "' not permitted for this endpoint"}})
-			c.Abort()
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": map[string]any{"code": domain.AccessDenied, "message": "No tiene permisos para esta operación."}})
+			return
+		}
+		c.Next()
+	}
+}
+
+// RequireAuthenticatedRole allows any authenticated principal with a non-empty role claim.
+// Used for collections / crypto-session / auth permissions so dynamic roles are not blocked.
+func RequireAuthenticatedRole() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if _, ok := EnforceAuthenticatedRole(c); !ok {
 			return
 		}
 		c.Next()
@@ -69,6 +81,5 @@ func hasScope(scopes []string, required string) bool {
 }
 
 func splitWords(s string) []string {
-	result := []string{s}
-	return result
+	return strings.Fields(s)
 }

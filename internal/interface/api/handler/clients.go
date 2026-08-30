@@ -20,16 +20,35 @@ func NewClientsHandler(clients *usecases.ClientsUsecase) *ClientsHandler {
 	return &ClientsHandler{clients: clients}
 }
 
+func clientsTraceAndTenant(c *gin.Context) (traceID, tenantID string) {
+	if v, ok := c.Get("trace_id"); ok {
+		if s, ok := v.(string); ok {
+			traceID = s
+		}
+	}
+	if v, ok := c.Get("tenant_id"); ok {
+		if s, ok := v.(string); ok {
+			tenantID = s
+		}
+	}
+	if tenantID == "" {
+		tenantID = c.GetHeader("X-Tenant-Id")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	return traceID, tenantID
+}
+
 // ListClients handles GET /api/v1/collections/clients
 func (h *ClientsHandler) ListClients(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
 	if ctx == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": 4061, "message": "El token de acceso no es válido."}})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 		return
 	}
 
-	traceID, _ := c.Get("trace_id")
-	tenantID, _ := c.Get("tenant_id")
+	traceID, tenantID := clientsTraceAndTenant(c)
 
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
@@ -43,13 +62,9 @@ func (h *ClientsHandler) ListClients(c *gin.Context) {
 		Offset: offset,
 	}
 
-	result, err := h.clients.ListClients(c.Request.Context(), traceID.(string), tenantID.(string), ctx.Email, params)
+	result, err := h.clients.ListClients(c.Request.Context(), traceID, tenantID, ctx.Email, params)
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.ClientsListFailed, "message": "No se pudo cargar el listado de clientes."}})
+		writeBusinessOrFallback(c, err, domain.ClientsListFailed, "No se pudo cargar el listado de clientes.")
 		return
 	}
 
@@ -60,12 +75,13 @@ func (h *ClientsHandler) ListClients(c *gin.Context) {
 func (h *ClientsHandler) ListClientContacts(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
 	if ctx == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": 4061, "message": "El token de acceso no es válido."}})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 		return
 	}
 
-	traceID, _ := c.Get("trace_id")
-	tenantID, _ := c.Get("tenant_id")
+	traceID, _ := clientsTraceAndTenant(c)
+	// anti-regresion: BUG-1008 Python uses get_principal_tenant_id → always "default"
+	tenantID := "default"
 
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
@@ -73,13 +89,9 @@ func (h *ClientsHandler) ListClientContacts(c *gin.Context) {
 		limit = 100
 	}
 
-	result, err := h.clients.ListClientContacts(c.Request.Context(), traceID.(string), tenantID.(string), ctx.Email, limit, offset)
+	result, err := h.clients.ListClientContacts(c.Request.Context(), traceID, tenantID, ctx.Email, limit, offset)
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.ClientContactsListFailed, "message": "No se pudo cargar la información de contacto de clientes."}})
+		writeBusinessOrFallback(c, err, domain.ClientContactsListFailed, "No se pudo cargar la información de contacto de clientes.")
 		return
 	}
 
@@ -90,12 +102,11 @@ func (h *ClientsHandler) ListClientContacts(c *gin.Context) {
 func (h *ClientsHandler) ListAtRisk(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
 	if ctx == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": 4061, "message": "El token de acceso no es válido."}})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 		return
 	}
 
-	traceID, _ := c.Get("trace_id")
-	tenantID, _ := c.Get("tenant_id")
+	traceID, tenantID := clientsTraceAndTenant(c)
 
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "200"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
@@ -103,13 +114,9 @@ func (h *ClientsHandler) ListAtRisk(c *gin.Context) {
 		limit = 200
 	}
 
-	result, err := h.clients.ListAtRisk(c.Request.Context(), traceID.(string), tenantID.(string), ctx.Email, limit, offset)
+	result, err := h.clients.ListAtRisk(c.Request.Context(), traceID, tenantID, ctx.Email, limit, offset)
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.AtRiskClientsListFailed, "message": "No se pudieron cargar los clientes en riesgo."}})
+		writeBusinessOrFallback(c, err, domain.AtRiskClientsListFailed, "No se pudieron cargar los clientes en riesgo.")
 		return
 	}
 

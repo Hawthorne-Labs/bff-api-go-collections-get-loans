@@ -1,95 +1,21 @@
-// Package fieldcrypto implements ECDHE(P-256) + HKDF-SHA256 crypto-session
-// handshake compatible with the Python BFF's CryptoSessionManager (enc:v1).
-//
-// The SPA sends its P-256 public key; the BFF generates an ephemeral P-256
-// keypair, derives a shared secret via ECDH, then HKDF-SHA256 with info
-// "hawthorne-fieldcrypto-v1" produces a 32-byte AES session key. The key is
-// stored in-memory only (never persisted/logged). A signed HS256 JWT
-// (crypto_access_token) lets the API Gateway validate the session without
-// being able to decrypt.
 package fieldcrypto
 
 import (
 	"crypto/ecdh"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
-	"strconv"
+	"os"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
-const (
-	info       = "hawthorne-fieldcrypto-v1"
-	audience   = "crypto-session"
-	defaultTTL = 900 // seconds
-)
-
-// ---------- base64url helpers ----------
-
-func b64uEnc(raw []byte) string {
-	return base64.RawURLEncoding.EncodeToString(raw)
-}
-
-func b64uDec(s string) ([]byte, error) {
-	return base64.RawURLEncoding.DecodeString(s)
-}
-
-// ---------- SessionStore ----------
-
-// SessionStore is an in-memory session-id -> key map with TTL.
-// Keys are never persisted or logged.
-type SessionStore struct {
-	ttl  time.Duration
-	mu   sync.RWMutex
-	keys map[string]sessionEntry
-}
-
-type sessionEntry struct {
-	key    []byte
-	expiry time.Time
-}
-
-// NewSessionStore creates a store with the given TTL.
-func NewSessionStore(ttlSeconds int) *SessionStore {
-	if ttlSeconds <= 0 {
-		ttlSeconds = defaultTTL
-	}
-	return &SessionStore{
-		ttl:  time.Duration(ttlSeconds) * time.Second,
-		keys: make(map[string]sessionEntry),
-	}
-}
-
-// Put stores a session key.
-func (s *SessionStore) Put(sessionID string, key []byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.keys[sessionID] = sessionEntry{key: key, expiry: time.Now().Add(s.ttl)}
-}
-
-// Get retrieves a session key. Returns nil if expired or missing.
-func (s *SessionStore) Get(sessionID string) []byte {
-	s.mu.RLock()
-	entry, ok := s.keys[sessionID]
-	s.mu.RUnlock()
-	if !ok {
-		return nil
-	}
-	if time.Now().After(entry.expiry) {
-		s.mu.Lock()
-		delete(s.keys, sessionID)
-		s.mu.Unlock()
-		return nil
-	}
-	return entry.key
-}
-
-// ---------- SessionManager ----------
+const defaultSessionTTL = 900
 
 // HandshakeResult is the JSON response returned to the frontend.
 type HandshakeResult struct {
@@ -100,145 +26,213 @@ type HandshakeResult struct {
 	ExpiresIn         int    `json:"expiresIn"`
 }
 
-// SessionManager performs the local P-256 ECDH handshake.
-type SessionManager struct {
-	store         *SessionStore
-	signingSecret []byte
-	issuer        string
-	ttlSeconds    int
+// SessionKeyStore persists session keys behind an interface.
+type SessionKeyStore interface {
+	Put(sessionID string, key []byte) error
+	Get(sessionID string) ([]byte, error)
+	Delete(sessionID string) error
+	Revoke(sessionID string) error
 }
 
-// NewSessionManager creates a manager.
-func NewSessionManager(store *SessionStore, signingSecret string, issuer string, ttlSeconds int) *SessionManager {
+// MemorySessionStore is an in-memory session-id -> key map with TTL.
+type MemorySessionStore struct {
+	ttl  time.Duration
+	mu   sync.RWMutex
+	keys map[string]sessionEntry
+}
+
+type sessionEntry struct {
+	key    []byte
+	expiry time.Time
+}
+
+// NewMemorySessionStore creates a memory store.
+func NewMemorySessionStore(ttlSeconds int) *MemorySessionStore {
 	if ttlSeconds <= 0 {
-		ttlSeconds = defaultTTL
+		ttlSeconds = defaultSessionTTL
 	}
-	return &SessionManager{
-		store:         store,
-		signingSecret: []byte(signingSecret),
-		issuer:        issuer,
-		ttlSeconds:    ttlSeconds,
+	return &MemorySessionStore{
+		ttl:  time.Duration(ttlSeconds) * time.Second,
+		keys: make(map[string]sessionEntry),
 	}
 }
 
-// Handshake performs the ECDHE(P-256) + HKDF-SHA256 handshake.
-// clientPublicB64 is the base64url-encoded uncompressed P-256 point from the SPA.
-func (m *SessionManager) Handshake(clientPublicB64 string, subject string, scope string) (*HandshakeResult, error) {
-	// Decode client public key (uncompressed P-256 point: 0x04 + 32 + 32 = 65 bytes)
-	clientPubBytes, err := b64uDec(clientPublicB64)
+func (s *MemorySessionStore) Put(sessionID string, key []byte) error {
+	if len(key) != sessionKeyBytes {
+		return fmt.Errorf("session key must be exactly 32 bytes")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keys[sessionID] = sessionEntry{key: key, expiry: time.Now().Add(s.ttl)}
+	return nil
+}
+
+func (s *MemorySessionStore) Get(sessionID string) ([]byte, error) {
+	s.mu.RLock()
+	entry, ok := s.keys[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return nil, nil
+	}
+	if time.Now().After(entry.expiry) {
+		s.mu.Lock()
+		delete(s.keys, sessionID)
+		s.mu.Unlock()
+		return nil, nil
+	}
+	return entry.key, nil
+}
+
+func (s *MemorySessionStore) Delete(sessionID string) error {
+	s.mu.Lock()
+	delete(s.keys, sessionID)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *MemorySessionStore) Revoke(sessionID string) error {
+	return s.Delete(sessionID)
+}
+
+// CryptoSessionManager manages store-backed crypto sessions (redis/memory).
+type CryptoSessionManager struct {
+	store      SessionKeyStore
+	secret     []byte
+	issuer     string
+	ttlSeconds int
+}
+
+// NewCryptoSessionManager creates a store-backed manager.
+func NewCryptoSessionManager(store SessionKeyStore, signingSecret, issuer string, ttlSeconds int) *CryptoSessionManager {
+	if ttlSeconds <= 0 {
+		ttlSeconds = defaultSessionTTL
+	}
+	return &CryptoSessionManager{
+		store:      store,
+		secret:     []byte(signingSecret),
+		issuer:     issuer,
+		ttlSeconds: ttlSeconds,
+	}
+}
+
+// Mode returns "redis" for store-backed sessions.
+func (m *CryptoSessionManager) Mode() string { return "redis" }
+
+// Handshake performs ECDHE(P-256) + HKDF and stores the session key.
+func (m *CryptoSessionManager) Handshake(clientPublicB64, subject, scope string) (*HandshakeResult, error) {
+	clientPubBytes, err := base64.RawURLEncoding.DecodeString(clientPublicB64)
 	if err != nil {
 		return nil, fmt.Errorf("decode client public key: %w", err)
 	}
-
 	clientPub, err := ecdh.P256().NewPublicKey(clientPubBytes)
 	if err != nil {
 		return nil, fmt.Errorf("parse client public key: %w", err)
 	}
-
-	// Generate ephemeral server P-256 keypair
 	serverPriv, err := ecdh.P256().GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("generate server key: %w", err)
+		return nil, err
 	}
-
-	// ECDH shared secret
 	shared, err := serverPriv.ECDH(clientPub)
 	if err != nil {
 		return nil, fmt.Errorf("ECDH derive: %w", err)
 	}
-
-	// HKDF-SHA256 to derive session key
 	salt := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
-		return nil, fmt.Errorf("generate salt: %w", err)
+		return nil, err
 	}
-
-	sessionKey := hkdfSHA256(shared, salt, []byte(info), 32)
-
-	// Store session
-	sessionID := randomHex(16)
-	m.store.Put(sessionID, sessionKey)
-
-	// Server public key (uncompressed point)
-	serverPubBytes := serverPriv.PublicKey().Bytes()
-
-	// Sign JWT
-	now := time.Now()
-	token, err := m.signJWT(subject, scope, sessionID, now)
+	sessionKey, err := deriveSessionKey(shared, salt)
 	if err != nil {
-		return nil, fmt.Errorf("sign JWT: %w", err)
+		return nil, err
 	}
-
+	sessionID := strings.ReplaceAll(uuid.NewString(), "-", "")
+	if err := m.store.Put(sessionID, sessionKey); err != nil {
+		return nil, err
+	}
+	now := time.Now().Unix()
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iss":               m.issuer,
+		"aud":               jwtAudience,
+		"sub":               subject,
+		"scope":             scope,
+		"crypto_session_id": sessionID,
+		"iat":               now,
+		"exp":               now + int64(m.ttlSeconds),
+	}).SignedString(m.secret)
+	if err != nil {
+		return nil, err
+	}
 	return &HandshakeResult{
-		ServerPublicKey:   b64uEnc(serverPubBytes),
-		Salt:              b64uEnc(salt),
+		ServerPublicKey:   base64.RawURLEncoding.EncodeToString(serverPriv.PublicKey().Bytes()),
+		Salt:              base64.RawURLEncoding.EncodeToString(salt),
 		CryptoSessionID:   sessionID,
 		CryptoAccessToken: token,
 		ExpiresIn:         m.ttlSeconds,
 	}, nil
 }
 
-// SessionKey returns the key for a session ID, or nil if not found/expired.
-func (m *SessionManager) SessionKey(sessionID string) []byte {
-	return m.store.Get(sessionID)
-}
-
-// ---------- HS256 JWT (manual, no external dependency) ----------
-
-func (m *SessionManager) signJWT(subject, scope, sessionID string, now time.Time) (string, error) {
-	header := map[string]string{
-		"alg": "HS256",
-		"typ": "JWT",
-	}
-	claims := map[string]any{
-		"iss":               m.issuer,
-		"aud":               audience,
-		"sub":               subject,
-		"scope":             scope,
-		"crypto_session_id": sessionID,
-		"iat":               now.Unix(),
-		"exp":               now.Add(time.Duration(m.ttlSeconds) * time.Second).Unix(),
-	}
-
-	headerJSON, err := json.Marshal(header)
+// VerifyAccessToken validates crypto access token against session id.
+func (m *CryptoSessionManager) VerifyAccessToken(token, sessionID string) bool {
+	parsed, err := jwt.Parse(token, func(t *jwt.Token) (any, error) {
+		return m.secret, nil
+	}, jwt.WithAudience(jwtAudience))
 	if err != nil {
-		return "", err
+		return false
 	}
-	claimsJSON, err := json.Marshal(claims)
+	claims, ok := parsed.Claims.(jwt.MapClaims)
+	if !ok || !parsed.Valid {
+		return false
+	}
+	return fmt.Sprint(claims["crypto_session_id"]) == sessionID
+}
+
+// SessionKey loads the session key from the store.
+func (m *CryptoSessionManager) SessionKey(sessionID string) ([]byte, error) {
+	key, err := m.store.Get(sessionID)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-
-	headerB64 := b64uEnc(headerJSON)
-	claimsB64 := b64uEnc(claimsJSON)
-	signingInput := headerB64 + "." + claimsB64
-
-	mac := hmac.New(sha256.New, m.signingSecret)
-	mac.Write([]byte(signingInput))
-	sig := mac.Sum(nil)
-
-	return signingInput + "." + b64uEnc(sig), nil
+	return key, nil
 }
 
-// ---------- HKDF-SHA256 (extract-then-expand) ----------
-
-func hkdfSHA256(secret, salt, info []byte, length int) []byte {
-	// Extract
-	mac := hmac.New(sha256.New, salt)
-	mac.Write(secret)
-	prk := mac.Sum(nil)
-
-	// Expand (single iteration for 32 bytes with SHA-256)
-	mac2 := hmac.New(sha256.New, prk)
-	mac2.Write(info)
-	mac2.Write([]byte{1})
-	return mac2.Sum(nil)[:length]
+// ResolveSessionTokenSecretFromEnv resolves CRYPTO_SESSION_TOKEN_SECRET.
+func ResolveSessionTokenSecretFromEnv() (string, error) {
+	dedicated := strings.TrimSpace(os.Getenv("CRYPTO_SESSION_TOKEN_SECRET"))
+	if dedicated != "" {
+		if SessionModeFromEnv() == "stateless" {
+			return AssertSigningOrDigestSecretNotWeak("CRYPTO_SESSION_TOKEN_SECRET", dedicated)
+		}
+		return dedicated, nil
+	}
+	if SessionModeFromEnv() == "stateless" {
+		return "", fmt.Errorf("CRYPTO_SESSION_TOKEN_SECRET must be set when CRYPTO_SESSION_MODE=stateless")
+	}
+	if isLocalOrTestEnvironment() {
+		legacy := strings.TrimSpace(os.Getenv("INTERNAL_JWT_SECRET"))
+		if legacy != "" {
+			return legacy, nil
+		}
+		return "dev-internal-jwt-secret-32-bytes-min", nil
+	}
+	return "", fmt.Errorf("CRYPTO_SESSION_TOKEN_SECRET must be set explicitly outside local/test environments")
 }
 
-// ---------- helpers ----------
+func isLocalOrTestEnvironment() bool {
+	env := strings.ToLower(strings.TrimSpace(os.Getenv("ENVIRONMENT")))
+	switch env {
+	case "local", "test", "testing", "development":
+		return true
+	default:
+		return false
+	}
+}
 
-func randomHex(n int) string {
-	b := make([]byte, n)
-	rand.Read(b)
-	return strconv.FormatInt(time.Now().UnixNano(), 36) + fmt.Sprintf("%x", b)[:n]
+// Legacy aliases for existing wiring.
+func NewSessionStore(ttlSeconds int) *MemorySessionStore {
+	return NewMemorySessionStore(ttlSeconds)
+}
+
+type SessionManager = CryptoSessionManager
+
+func NewSessionManager(store *MemorySessionStore, signingSecret, issuer string, ttlSeconds int) *CryptoSessionManager {
+	return NewCryptoSessionManager(store, signingSecret, issuer, ttlSeconds)
 }

@@ -24,7 +24,7 @@ func NewStrategyHandler(strategy *usecases.StrategyUsecase) *StrategyHandler {
 func (h *StrategyHandler) GetSegmentation(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
 	if ctx == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": 4061, "message": "El token de acceso no es válido."}})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 		return
 	}
 
@@ -35,11 +35,7 @@ func (h *StrategyHandler) GetSegmentation(c *gin.Context) {
 
 	result, err := h.strategy.GetSegmentation(c.Request.Context(), traceID.(string), tenantID.(string), ctx.Email, marca)
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.StrategySegmentationFailed, "message": "No se pudo cargar la segmentación de estrategia."}})
+		writeBusinessOrFallback(c, err, domain.StrategySegmentationFailed, "No se pudo cargar la segmentación de estrategia.")
 		return
 	}
 
@@ -50,7 +46,7 @@ func (h *StrategyHandler) GetSegmentation(c *gin.Context) {
 func (h *StrategyHandler) ListAssignments(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
 	if ctx == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": 4061, "message": "El token de acceso no es válido."}})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 		return
 	}
 
@@ -67,11 +63,7 @@ func (h *StrategyHandler) ListAssignments(c *gin.Context) {
 
 	result, err := h.strategy.ListAssignments(c.Request.Context(), traceID.(string), tenantID.(string), ctx.Email, limit, offset, marca)
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.StrategyAssignmentsListFailed, "message": "No se pudo cargar el historial de asignaciones de estrategia."}})
+		writeBusinessOrFallback(c, err, domain.StrategyAssignmentsListFailed, "No se pudo cargar el historial de asignaciones de estrategia.")
 		return
 	}
 
@@ -82,7 +74,7 @@ func (h *StrategyHandler) ListAssignments(c *gin.Context) {
 func (h *StrategyHandler) CreateAssignment(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
 	if ctx == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": 4061, "message": "El token de acceso no es válido."}})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 		return
 	}
 
@@ -97,11 +89,7 @@ func (h *StrategyHandler) CreateAssignment(c *gin.Context) {
 
 	result, err := h.strategy.CreateAssignment(c.Request.Context(), traceID.(string), tenantID.(string), ctx.Email, body)
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.StrategyAssignmentCreateFailed, "message": "No se pudo guardar la asignación de estrategia."}})
+		writeBizError(c, err, domain.StrategyAssignmentCreateFailed, "No se pudo guardar la asignación de estrategia.")
 		return
 	}
 
@@ -112,7 +100,7 @@ func (h *StrategyHandler) CreateAssignment(c *gin.Context) {
 func (h *StrategyHandler) CleanQueue(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
 	if ctx == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": 4061, "message": "El token de acceso no es válido."}})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 		return
 	}
 
@@ -127,11 +115,7 @@ func (h *StrategyHandler) CleanQueue(c *gin.Context) {
 
 	result, err := h.strategy.CleanQueue(c.Request.Context(), traceID.(string), tenantID.(string), ctx.Email, body)
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.StrategyQueueCleanFailed, "message": "No se pudo limpiar la cola de estrategia."}})
+		writeBusinessOrFallback(c, err, domain.StrategyQueueCleanFailed, "No se pudo limpiar la cola de estrategia.")
 		return
 	}
 

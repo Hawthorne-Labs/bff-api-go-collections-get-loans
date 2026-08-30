@@ -20,16 +20,28 @@ func NewLoansHandler(loans *usecases.LoansUsecase) *LoansHandler {
 	return &LoansHandler{loans: loans}
 }
 
+func contextStrings(c *gin.Context) (traceID, tenantID string) {
+	if v, ok := c.Get("trace_id"); ok {
+		if s, ok := v.(string); ok {
+			traceID = s
+		}
+	}
+	// anti-regresion: BUG-1008 Python get_principal_tenant_id always "default" for Core loans/contacts.
+	// SPA X-Tenant-Id is the operational marca for FLE only — never forward it as Core tenant.
+	tenantID = "default"
+	return traceID, tenantID
+}
+
+
 // ListLoans handles GET /api/v1/collections/loans
 func (h *LoansHandler) ListLoans(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
-	if ctx == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": 4061, "message": "El token de acceso no es válido."}})
+	if ctx == nil || ctx.Sub == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 		return
 	}
 
-	traceID, _ := c.Get("trace_id")
-	tenantID, _ := c.Get("tenant_id")
+	traceID, tenantID := contextStrings(c)
 
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
@@ -40,26 +52,28 @@ func (h *LoansHandler) ListLoans(c *gin.Context) {
 		offset = 0
 	}
 
+	agentID := ""
+	if requested := c.Query("agent_id"); requested != "" {
+		// anti-regresion: BUG-0945 — agent/call_center cannot spoof another agent_id
+		agentID = middleware.ResolveAgentID(ctx, requested)
+	}
 	params := usecases.ListParams{
-		Search:       c.Query("search"),
-		SearchBy:     c.Query("search_by"),
-		Status:       c.Query("status"),
-		Sort:         c.Query("sort"),
-		AgentID:      c.Query("agent_id"),
-		ClientID:     c.Query("client_id"),
-		BranchTenant: c.Query("branch_tenant"),
-		View:         c.Query("view"),
-		Limit:        limit,
-		Offset:       offset,
+		Search:         c.Query("search"),
+		SearchBy:       c.Query("search_by"),
+		Status:         c.Query("status"),
+		Sort:           c.Query("sort"),
+		AgentID:        agentID,
+		ClientID:       c.Query("client_id"),
+		ClientIdentity: c.Query("client_identity"),
+		BranchTenant:   c.Query("branch_tenant"),
+		View:           c.Query("view"),
+		Limit:          limit,
+		Offset:         offset,
 	}
 
-	result, err := h.loans.ListLoans(c.Request.Context(), traceID.(string), tenantID.(string), ctx.Email, params)
+	result, err := h.loans.ListLoans(c.Request.Context(), traceID, tenantID, ctx.Email, params)
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.LoansListFailed, "message": "No se pudo cargar la cartera de préstamos."}})
+		writeBizError(c, err, domain.LoansListFailed, "No se pudo cargar la cartera de préstamos.")
 		return
 	}
 
@@ -69,50 +83,40 @@ func (h *LoansHandler) ListLoans(c *gin.Context) {
 // GetLoan handles GET /api/v1/collections/loans/:loanId
 func (h *LoansHandler) GetLoan(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
-	if ctx == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": 4061, "message": "El token de acceso no es válido."}})
+	if ctx == nil || ctx.Sub == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 		return
 	}
 
 	loanID := c.Param("loanId")
-	traceID, _ := c.Get("trace_id")
-	tenantID, _ := c.Get("tenant_id")
+	traceID, tenantID := contextStrings(c)
+	view := c.Query("view")
 
-	result, err := h.loans.GetLoanDetail(c.Request.Context(), loanID, traceID.(string), tenantID.(string), ctx.Email)
+	result, err := h.loans.GetLoanDetail(c.Request.Context(), loanID, traceID, tenantID, ctx.Email, view)
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.LoanDetailLoadFailed, "message": "No se pudo cargar el detalle del préstamo."}})
+		writeBizError(c, err, domain.LoanDetailLoadFailed, "No se pudo cargar el detalle del préstamo.")
 		return
 	}
 
-	// Apply PII masking to client sub-object
 	result = maskClientPII(result)
-
 	c.JSON(http.StatusOK, result)
 }
 
 // GetLoanBalance handles GET /api/v1/collections/loans/:loanId/balance
 func (h *LoansHandler) GetLoanBalance(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
-	if ctx == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": 4061, "message": "El token de acceso no es válido."}})
+	if ctx == nil || ctx.Sub == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 		return
 	}
 
 	loanID := c.Param("loanId")
-	traceID, _ := c.Get("trace_id")
-	tenantID, _ := c.Get("tenant_id")
+	traceID, tenantID := contextStrings(c)
+	view := c.Query("view")
 
-	result, err := h.loans.GetLoanBalance(c.Request.Context(), loanID, traceID.(string), tenantID.(string), ctx.Email)
+	result, err := h.loans.GetLoanBalance(c.Request.Context(), loanID, traceID, tenantID, ctx.Email, view)
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.LoanBalanceLoadFailed, "message": "No se pudo cargar el saldo del préstamo."}})
+		writeBizError(c, err, domain.LoanBalanceLoadFailed, "No se pudo cargar el saldo del préstamo.")
 		return
 	}
 
@@ -122,28 +126,24 @@ func (h *LoansHandler) GetLoanBalance(c *gin.Context) {
 // GetLoanInstallments handles GET /api/v1/collections/loans/:loanId/installments
 func (h *LoansHandler) GetLoanInstallments(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
-	if ctx == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": 4061, "message": "El token de acceso no es válido."}})
+	if ctx == nil || ctx.Sub == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 		return
 	}
 
 	loanID := c.Param("loanId")
-	traceID, _ := c.Get("trace_id")
-	tenantID, _ := c.Get("tenant_id")
+	traceID, tenantID := contextStrings(c)
 
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	if limit < 1 || limit > 500 {
 		limit = 50
 	}
+	view := c.Query("view")
 
-	result, err := h.loans.GetLoanInstallments(c.Request.Context(), loanID, traceID.(string), tenantID.(string), ctx.Email, limit, offset)
+	result, err := h.loans.GetLoanInstallments(c.Request.Context(), loanID, traceID, tenantID, ctx.Email, limit, offset, view)
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.LoanPaymentPlanLoad, "message": "No se pudo cargar el plan de pago del préstamo."}})
+		writeBizError(c, err, domain.LoanPaymentPlanLoad, "No se pudo cargar el plan de pago del préstamo.")
 		return
 	}
 
@@ -153,14 +153,13 @@ func (h *LoansHandler) GetLoanInstallments(c *gin.Context) {
 // GetLoanStatement handles GET /api/v1/collections/loans/:loanId/statement
 func (h *LoansHandler) GetLoanStatement(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
-	if ctx == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": 4061, "message": "El token de acceso no es válido."}})
+	if ctx == nil || ctx.Sub == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 		return
 	}
 
 	loanID := c.Param("loanId")
-	traceID, _ := c.Get("trace_id")
-	tenantID, _ := c.Get("tenant_id")
+	traceID, tenantID := contextStrings(c)
 
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
@@ -168,7 +167,7 @@ func (h *LoansHandler) GetLoanStatement(c *gin.Context) {
 		limit = 50
 	}
 
-	result, err := h.loans.GetLoanStatement(c.Request.Context(), loanID, traceID.(string), tenantID.(string), ctx.Email, struct {
+	result, err := h.loans.GetLoanStatement(c.Request.Context(), loanID, traceID, tenantID, ctx.Email, struct {
 		FromDate string
 		ToDate   string
 		Limit    int
@@ -182,11 +181,7 @@ func (h *LoansHandler) GetLoanStatement(c *gin.Context) {
 		View:     c.Query("view"),
 	})
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.LoanStatementLoad, "message": "No se pudo cargar el estado de cuenta del préstamo."}})
+		writeBizError(c, err, domain.LoanStatementLoad, "No se pudo cargar el estado de cuenta del préstamo.")
 		return
 	}
 
@@ -228,15 +223,7 @@ func maskClientPII(result map[string]any) map[string]any {
 		maskedClient["secondary_phones"] = maskedPhones
 	}
 
-	result["data"] = map[string]any{
-		"client":              maskedClient,
-		"loan_id":             data["loan_id"],
-		"status":              data["status"],
-		"principal":           data["principal"],
-		"outstanding_balance": data["outstanding_balance"],
-		"interest_rate":       data["interest_rate"],
-		"vehicle":             data["vehicle"],
-		"payment_promises":    data["payment_promises"],
-	}
+	result["data"] = data
+	data["client"] = maskedClient
 	return result
 }

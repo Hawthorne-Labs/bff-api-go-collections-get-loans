@@ -82,8 +82,8 @@ func CryptoEnforce() gin.HandlerFunc {
 		if sessionID == "" || requestID == "" {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": map[string]any{
-					"code":    4060,
-					"message": "encrypted client.fullName requires a crypto session (Crypto-Session-Id/Request-Id)",
+					"code":    90109,
+					"message": "Sesion de cifrado invalida.",
 				},
 			})
 			c.Abort()

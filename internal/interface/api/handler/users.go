@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -20,6 +21,26 @@ func NewUsersHandler(users *usecases.UsersUsecase) *UsersHandler {
 	return &UsersHandler{users: users}
 }
 
+func usersTraceTenant(c *gin.Context) (traceID, tenantID string) {
+	if v, ok := c.Get("trace_id"); ok {
+		if s, ok := v.(string); ok {
+			traceID = s
+		}
+	}
+	if v, ok := c.Get("tenant_id"); ok {
+		if s, ok := v.(string); ok {
+			tenantID = s
+		}
+	}
+	if tenantID == "" {
+		tenantID = c.GetHeader("X-Tenant-Id")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	return traceID, tenantID
+}
+
 // ListUsers handles GET /api/v1/admin/users (admin only)
 func (h *UsersHandler) ListUsers(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
@@ -27,20 +48,12 @@ func (h *UsersHandler) ListUsers(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": map[string]any{"code": domain.AccessDenied, "message": "No tiene permisos para realizar esta acción."}})
 		return
 	}
-
-	traceID, _ := c.Get("trace_id")
-	tenantID, _ := c.Get("tenant_id")
-
-	result, err := h.users.ListUsers(c.Request.Context(), traceID.(string), tenantID.(string), ctx.Email)
+	traceID, tenantID := usersTraceTenant(c)
+	result, err := h.users.ListUsers(c.Request.Context(), traceID, tenantID, ctx.Email)
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.UsersListFailed, "message": "No se pudo cargar el listado de usuarios."}})
+		writeBusinessOrFallback(c, err, domain.UsersListFailed, "No se pudo cargar el listado de usuarios.")
 		return
 	}
-
 	c.JSON(http.StatusOK, result)
 }
 
@@ -51,136 +64,95 @@ func (h *UsersHandler) CreateUser(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": map[string]any{"code": domain.AccessDenied, "message": "No tiene permisos para realizar esta acción."}})
 		return
 	}
-
-	traceID, _ := c.Get("trace_id")
-	tenantID, _ := c.Get("tenant_id")
-
-	var body map[string]any
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": map[string]any{"code": 4000, "message": "Solicitud inválida."}})
+	var req domain.CreateUserRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": map[string]any{"code": domain.ValidationFailed, "message": "Solicitud inválida."}})
 		return
 	}
-
-	result, err := h.users.CreateUser(c.Request.Context(), traceID.(string), tenantID.(string), ctx.Email, body)
+	if err := req.NormalizeAndValidate(); err != nil {
+		writeBusinessOrFallback(c, err, domain.ValidationFailed, "Validacion fallida.")
+		return
+	}
+	traceID, tenantID := usersTraceTenant(c)
+	result, err := h.users.CreateUser(c.Request.Context(), traceID, tenantID, ctx.Email, req.ToBody())
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.UserCreateFailed, "message": "conflicto en procesar solicitud de alta de cliente"}})
+		writeBusinessOrFallback(c, err, domain.UserCreateFailed, "conflicto en procesar solicitud de alta de cliente")
 		return
 	}
-
 	c.JSON(http.StatusCreated, result)
 }
 
-// UpdateUser handles PUT /api/v1/admin/users/:email (admin only)
+// UpdateUser handles PATCH/PUT /api/v1/admin/users/:userId (admin only)
 func (h *UsersHandler) UpdateUser(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
 	if ctx == nil || ctx.Role != "admin" {
 		c.JSON(http.StatusForbidden, gin.H{"error": map[string]any{"code": domain.AccessDenied, "message": "No tiene permisos para realizar esta acción."}})
 		return
 	}
-
-	email := c.Param("email")
-	// URL decode the email
-	email, _ = unescapeParam(email)
-
-	traceID, _ := c.Get("trace_id")
-	tenantID, _ := c.Get("tenant_id")
-
-	var body map[string]any
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": map[string]any{"code": 4000, "message": "Solicitud inválida."}})
+	userID, _ := url.PathUnescape(c.Param("userId"))
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": map[string]any{"code": domain.ValidationFailed, "message": "Solicitud inválida."}})
 		return
 	}
-
-	result, err := h.users.UpdateUser(c.Request.Context(), email, traceID.(string), tenantID.(string), ctx.Email, body)
+	var req domain.UpdateUserRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": map[string]any{"code": domain.ValidationFailed, "message": "Solicitud inválida."}})
+		return
+	}
+	if err := req.NormalizeAndValidate(); err != nil {
+		writeBusinessOrFallback(c, err, domain.ValidationFailed, "Validacion fallida.")
+		return
+	}
+	traceID, tenantID := usersTraceTenant(c)
+	result, err := h.users.UpdateUser(c.Request.Context(), userID, traceID, tenantID, ctx.Email, req.ToBody())
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.UserCreateFailed, "message": "No se pudo actualizar el usuario."}})
+		writeBusinessOrFallback(c, err, domain.UserCreateFailed, "No se pudo actualizar el usuario.")
 		return
 	}
-
 	c.JSON(http.StatusOK, result)
 }
 
-// ResetPassword handles POST /api/v1/admin/users/:email/reset-password (admin only)
+// ResetPassword handles POST /api/v1/admin/users/:userId/reset-password (admin only)
 func (h *UsersHandler) ResetPassword(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
 	if ctx == nil || ctx.Role != "admin" {
 		c.JSON(http.StatusForbidden, gin.H{"error": map[string]any{"code": domain.AccessDenied, "message": "No tiene permisos para realizar esta acción."}})
 		return
 	}
-
-	email := c.Param("email")
-	email, _ = unescapeParam(email)
-
-	traceID, _ := c.Get("trace_id")
-	tenantID, _ := c.Get("tenant_id")
-
-	var body struct {
-		Email string `json:"email"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": map[string]any{"code": 4000, "message": "Solicitud inválida."}})
+	userID, _ := url.PathUnescape(c.Param("userId"))
+	userID = strings.TrimSpace(userID)
+	var req domain.ResetPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": map[string]any{"code": domain.ValidationFailed, "message": "Solicitud inválida."}})
 		return
 	}
-	if body.Email == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": map[string]any{"code": domain.UserCreateFailed, "message": "email is required"}})
+	if err := req.ValidateEmail(); err != nil {
+		writeBusinessOrFallback(c, err, domain.ValidationFailed, "email is required")
 		return
 	}
-
-	// Call core to reset password
-	result, err := h.users.ListUsers(c.Request.Context(), traceID.(string), tenantID.(string), ctx.Email)
+	traceID, tenantID := usersTraceTenant(c)
+	result, err := h.users.ResetPassword(c.Request.Context(), userID, req.Email, traceID, tenantID, ctx.Email)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.UserCreateFailed, "message": "No se pudo reiniciar la contraseña."}})
+		writeBusinessOrFallback(c, err, domain.UserCreateFailed, "No se pudo reiniciar la contraseña.")
 		return
 	}
-
-	// Find user by email in the list
-	items, _ := result["items"].([]any)
-	found := false
-	for _, item := range items {
-		if m, ok := item.(map[string]any); ok {
-			if e, ok := m["email"].(string); ok && strings.EqualFold(e, body.Email) {
-				found = true
-				break
-			}
-		}
-	}
-	if !found {
-		c.JSON(http.StatusNotFound, gin.H{"error": map[string]any{"code": domain.UserCreateFailed, "message": "Usuario no encontrado para reinicio de contraseña."}})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{"password_reset": true, "email": body.Email}})
+	c.JSON(http.StatusOK, result)
 }
 
 // GetMyPermissions handles GET /api/v1/collections/me/permissions
 func (h *UsersHandler) GetMyPermissions(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
 	if ctx == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": 4061, "message": "El token de acceso no es válido."}})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 		return
 	}
-
-	traceID, _ := c.Get("trace_id")
-	tenantID, _ := c.Get("tenant_id")
-
-	result, err := h.users.GetMyPermissions(c.Request.Context(), traceID.(string), tenantID.(string), ctx.Email)
+	traceID, tenantID := usersTraceTenant(c)
+	result, err := h.users.GetMyPermissions(c.Request.Context(), traceID, tenantID, ctx.Email)
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.UserPermissionsLoad, "message": "No se pudieron cargar los permisos del usuario."}})
+		writeBusinessOrFallback(c, err, domain.UserPermissionsLoad, "No se pudieron cargar los permisos del usuario.")
 		return
 	}
-
 	c.JSON(http.StatusOK, result)
 }
 
@@ -188,23 +160,15 @@ func (h *UsersHandler) GetMyPermissions(c *gin.Context) {
 func (h *UsersHandler) ListMyTenants(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
 	if ctx == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": 4061, "message": "El token de acceso no es válido."}})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 		return
 	}
-
-	traceID, _ := c.Get("trace_id")
-	tenantID, _ := c.Get("tenant_id")
-
-	result, err := h.users.ListMyTenants(c.Request.Context(), traceID.(string), tenantID.(string), ctx.Email)
+	traceID, tenantID := usersTraceTenant(c)
+	result, err := h.users.ListMyTenants(c.Request.Context(), traceID, tenantID, ctx.Email)
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.UserTenantsListFailed, "message": "No se pudieron cargar las marcas disponibles para el usuario."}})
+		writeBusinessOrFallback(c, err, domain.UserTenantsListFailed, "No se pudieron cargar las marcas disponibles para el usuario.")
 		return
 	}
-
 	c.JSON(http.StatusOK, result)
 }
 
@@ -215,20 +179,12 @@ func (h *UsersHandler) ListTenantSyncStatus(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": map[string]any{"code": domain.AccessDenied, "message": "No tiene permisos para realizar esta acción."}})
 		return
 	}
-
-	traceID, _ := c.Get("trace_id")
-	tenantID, _ := c.Get("tenant_id")
-
-	result, err := h.users.ListTenantSyncStatus(c.Request.Context(), traceID.(string), tenantID.(string), ctx.Email)
+	traceID, tenantID := usersTraceTenant(c)
+	result, err := h.users.ListTenantSyncStatus(c.Request.Context(), traceID, tenantID, ctx.Email)
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.UserTenantsListFailed, "message": "No se pudo cargar el estado de sincronización de las marcas."}})
+		writeBusinessOrFallback(c, err, domain.UserTenantsListFailed, "No se pudo cargar el estado de sincronización de las marcas.")
 		return
 	}
-
 	c.JSON(http.StatusOK, result)
 }
 
@@ -236,23 +192,15 @@ func (h *UsersHandler) ListTenantSyncStatus(c *gin.Context) {
 func (h *UsersHandler) RecordLastLogin(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
 	if ctx == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": 4061, "message": "El token de acceso no es válido."}})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 		return
 	}
-
-	traceID, _ := c.Get("trace_id")
-	tenantID, _ := c.Get("tenant_id")
-
-	err := h.users.RecordLastLogin(c.Request.Context(), traceID.(string), tenantID.(string), ctx.Email)
+	traceID, tenantID := usersTraceTenant(c)
+	err := h.users.RecordLastLogin(c.Request.Context(), traceID, tenantID, ctx.Email)
 	if err != nil {
-		if bizErr, ok := err.(*domain.BusinessError); ok {
-			c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": bizErr.Code, "message": bizErr.Message}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"error": map[string]any{"code": domain.UserLastLoginRecord, "message": "No se pudo registrar el último acceso del usuario."}})
+		writeBusinessOrFallback(c, err, domain.UserLastLoginRecord, "No se pudo registrar el último acceso del usuario.")
 		return
 	}
-
 	c.Status(http.StatusNoContent)
 }
 
@@ -263,10 +211,4 @@ func canViewTenantSyncStatus(role string) bool {
 	default:
 		return false
 	}
-}
-
-// unescapeParam URL-decodes a path parameter
-func unescapeParam(s string) (string, error) {
-	// Simple unescape — in production use net/url PathUnescape
-	return s, nil
 }
