@@ -36,7 +36,7 @@ func RegisterRoutes(
 
 	readScope := middleware.RequireScope("collections:read")
 	anyRole := middleware.RequireAuthenticatedRole()
-	mandoScope := middleware.RequireMandoCollectionsScope()
+	mandoScope := middleware.RequireMandoCollectionsAccess()
 	adminRole := middleware.RequireRole(adminOnly...)
 
 	// Auth internal routes

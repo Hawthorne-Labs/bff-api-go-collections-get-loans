@@ -18,6 +18,17 @@ func RequireMandoCollectionsScope() gin.HandlerFunc {
 	return RequireScope(MandoCollectionsScope)
 }
 
+// RequireMandoCollectionsAccess enforces mando via collections:assign or legacy role fallback.
+// anti-regresion: BUG-1023 ver handoffs/regressions.md (no revertir sin leer)
+func RequireMandoCollectionsAccess() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if _, ok := EnforceSupervisorRoles(c); !ok {
+			return
+		}
+		c.Next()
+	}
+}
+
 // ContextHasScope reports whether the Cognito context includes a scope claim.
 func ContextHasScope(ctx *CognitoContext, required string) bool {
 	if ctx == nil {
