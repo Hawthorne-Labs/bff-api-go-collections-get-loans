@@ -172,11 +172,11 @@ func (h *UsersHandler) ListMyTenants(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// ListTenantSyncStatus handles GET /api/v1/admin/tenants (supervisor, manager, admin).
+// ListTenantSyncStatus handles GET /api/v1/admin/tenants (collections:assign scope).
 func (h *UsersHandler) ListTenantSyncStatus(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
-	if ctx == nil || !canViewTenantSyncStatus(ctx.Role) {
-		c.JSON(http.StatusForbidden, gin.H{"error": map[string]any{"code": domain.AccessDenied, "message": "No tiene permisos para realizar esta acción."}})
+	if ctx == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
 		return
 	}
 	traceID, tenantID := usersTraceTenant(c)
@@ -202,13 +202,4 @@ func (h *UsersHandler) RecordLastLogin(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
-}
-
-func canViewTenantSyncStatus(role string) bool {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "admin", "supervisor", "manager":
-		return true
-	default:
-		return false
-	}
 }

@@ -14,15 +14,22 @@ import (
 var ErrInvalidCognitoToken = errors.New("invalid cognito token")
 
 var roleScopes = map[string][]string{
-	"agent":       {"collections:read", "collections:write", "collections:read:own", "collections:write:own", "notifications:read", "notifications:write"},
-	"call_center": {"collections:read", "collections:write", "collections:read:own", "collections:write:own", "notifications:read", "notifications:write"},
-	"supervisor":  {"collections:read", "collections:write", "collections:escalate", "collections:assign", "notifications:read", "notifications:write"},
-	"manager":     {"collections:read", "collections:write", "collections:escalate", "collections:assign", "collections:approve", "notifications:read", "notifications:write"},
-	"admin":       {"collections:read", "collections:write", "collections:escalate", "collections:assign", "collections:approve", "notifications:read", "notifications:write"},
-	"auditor":     {"collections:read"},
+	"agent":         {"collections:read", "collections:write", "collections:read:own", "collections:write:own", "notifications:read", "notifications:write"},
+	"call_center":   {"collections:read", "collections:write", "collections:read:own", "collections:write:own", "notifications:read", "notifications:write"},
+	"gestor_senior": {"collections:read", "collections:write", "collections:read:own", "collections:write:own", "notifications:read", "notifications:write"},
+	"supervisor":    {"collections:read", "collections:write", "collections:escalate", "collections:assign", "notifications:read", "notifications:write"},
+	"especial":      {"collections:read", "collections:write", "collections:escalate", "collections:assign", "notifications:read", "notifications:write"},
+	"manager":       {"collections:read", "collections:write", "collections:escalate", "collections:assign", "collections:approve", "notifications:read", "notifications:write"},
+	"sub_gerente":   {"collections:read", "collections:write", "collections:escalate", "collections:assign", "collections:approve", "notifications:read", "notifications:write"},
+	"admin":         {"collections:read", "collections:write", "collections:escalate", "collections:assign", "collections:approve", "notifications:read", "notifications:write"},
+	"auditor":       {"collections:read"},
 }
 
-var rolePriority = []string{"admin", "manager", "supervisor", "call_center", "agent", "auditor"}
+// anti-regresion: BUG-1018 ver handoffs/regressions.md (no revertir sin leer)
+var rolePriority = []string{
+	"admin", "manager", "sub_gerente", "supervisor", "especial",
+	"call_center", "gestor_senior", "agent", "auditor",
+}
 
 type CognitoClaims struct {
 	Subject string

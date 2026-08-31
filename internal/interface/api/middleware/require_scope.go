@@ -9,6 +9,23 @@ import (
 	"github.com/hawthorne/bff-api-go-collections-get-loans/internal/domain"
 )
 
+// MandoCollectionsScope gates supervisor+ workloads (strategy, at-risk, tenant sync).
+// ADR-2026-08-30: prefer this scope over hard-coded role codes for dynamic roles.
+const MandoCollectionsScope = "collections:assign"
+
+// RequireMandoCollectionsScope enforces supervisor+ access via JWT scope claim.
+func RequireMandoCollectionsScope() gin.HandlerFunc {
+	return RequireScope(MandoCollectionsScope)
+}
+
+// ContextHasScope reports whether the Cognito context includes a scope claim.
+func ContextHasScope(ctx *CognitoContext, required string) bool {
+	if ctx == nil {
+		return false
+	}
+	return hasScope(splitScope(ctx.Scope), required)
+}
+
 // RequireScope enforces that the Cognito token includes a required scope.
 func RequireScope(requiredScope string) gin.HandlerFunc {
 	return func(c *gin.Context) {

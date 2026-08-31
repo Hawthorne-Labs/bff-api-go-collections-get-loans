@@ -216,3 +216,34 @@ func TestEmptyEmailIsNeverCached(t *testing.T) {
 		t.Fatal("empty emails must not be stored")
 	}
 }
+
+func TestLegacyPuestoRolesResolveScopes(t *testing.T) {
+	key := testRSA(t)
+	validator := testValidator(t, key, nil, nil)
+	cases := []struct {
+		group    string
+		wantRole string
+	}{
+		{"sub_gerente", "sub_gerente"},
+		{"especial", "especial"},
+		{"gestor_senior", "gestor_senior"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.group, func(t *testing.T) {
+			token := mintAccessToken(t, key, "test-key", jwt.MapClaims{
+				"email":          tc.group + "@hawthorne.local",
+				"cognito:groups": []string{tc.group},
+			})
+			claims, err := validator.Validate(context.Background(), token)
+			if err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			if claims.Role != tc.wantRole {
+				t.Fatalf("role=%q want %q", claims.Role, tc.wantRole)
+			}
+			if _, ok := claims.Scopes["collections:read"]; !ok {
+				t.Fatalf("expected collections:read scope for %s", tc.group)
+			}
+		})
+	}
+}

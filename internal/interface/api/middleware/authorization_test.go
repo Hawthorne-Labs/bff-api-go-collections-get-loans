@@ -102,6 +102,104 @@ func TestEnforceAuthenticatedRoleRejectsEmptyRole(t *testing.T) {
 	}
 }
 
+func TestRequireScopeCollectionsAssignAllowsDynamicMandoRole(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("cognito_context", &CognitoContext{
+			Sub:   "regional-1",
+			Role:  "regional_lead",
+			Scope: "collections:read collections:assign notifications:read",
+		})
+		c.Next()
+	})
+	r.GET("/admin/tenants", RequireScope("collections:assign"), func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/tenants", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestRequireScopeCollectionsAssignBlocksAgentWithoutAssign(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("cognito_context", &CognitoContext{
+			Sub:   "agent-1",
+			Role:  "agent",
+			Scope: "collections:read collections:write notifications:read",
+		})
+		c.Next()
+	})
+	r.GET("/admin/tenants", RequireScope("collections:assign"), func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/tenants", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", w.Code)
+	}
+}
+
+func TestEnforceSupervisorRolesAllowsScopeOnlyDynamicRole(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("cognito_context", &CognitoContext{
+			Sub:   "regional-1",
+			Role:  "regional_lead",
+			Scope: "collections:read collections:assign",
+		})
+		c.Next()
+	})
+	r.GET("/strategy/segmentation", func(c *gin.Context) {
+		if _, ok := EnforceSupervisorRoles(c); !ok {
+			return
+		}
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/strategy/segmentation", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestEnforceSupervisorRolesAllowsSubGerente(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("cognito_context", &CognitoContext{
+			Sub:   "subg-1",
+			Role:  "sub_gerente",
+			Scope: "collections:read",
+		})
+		c.Next()
+	})
+	r.GET("/strategy", func(c *gin.Context) {
+		if _, ok := EnforceSupervisorRoles(c); !ok {
+			return
+		}
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/strategy", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+}
+
 func TestEnforceSupervisorRolesBlocksCallCenter(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()

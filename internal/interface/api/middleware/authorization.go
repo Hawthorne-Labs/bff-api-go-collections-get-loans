@@ -12,10 +12,17 @@ import (
 
 var (
 	// Kept for documentation / supervisor-adjacent helpers; collections gates no longer use this list.
-	allRoles        = []string{"agent", "call_center", "supervisor", "manager", "admin", "auditor"}
-	supervisorRoles = []string{"supervisor", "manager", "admin"}
+	allRoles = []string{
+		"agent", "call_center", "gestor_senior", "supervisor", "especial",
+		"manager", "sub_gerente", "admin", "auditor",
+	}
+	// anti-regresion: BUG-1019 ver handoffs/regressions.md (no revertir sin leer)
+	supervisorRoles = []string{"supervisor", "manager", "admin", "sub_gerente", "especial"}
 	// anti-regresion: BUG-0971 — agent/call_center need workload for Cobranza progress bar.
-	workloadRoles = []string{"agent", "call_center", "supervisor", "manager", "admin"}
+	workloadRoles = []string{
+		"agent", "call_center", "gestor_senior", "supervisor", "especial",
+		"manager", "sub_gerente", "admin",
+	}
 )
 
 // EnforceRole checks the Cognito role against an allowlist.
@@ -52,8 +59,17 @@ func EnforceAllRoles(c *gin.Context) (*CognitoContext, bool) {
 	return EnforceAuthenticatedRole(c)
 }
 
-// EnforceSupervisorRoles allows supervisor/manager/admin (Python _SUPERVISOR_ADMIN).
+// EnforceSupervisorRoles allows mando access via collections:assign, with legacy role fallback.
 func EnforceSupervisorRoles(c *gin.Context) (*CognitoContext, bool) {
+	ctx := GetCognitoContext(c)
+	if ctx == nil || ctx.Sub == "" {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
+		return nil, false
+	}
+	if ContextHasScope(ctx, MandoCollectionsScope) {
+		return ctx, true
+	}
+	// anti-regresion: BUG-1019 — legacy tokens may lack scope claims but carry mando role.
 	return EnforceRole(c, supervisorRoles...)
 }
 
@@ -68,7 +84,7 @@ func ResolveAgentID(ctx *CognitoContext, requested string) string {
 		return strings.TrimSpace(requested)
 	}
 	// anti-regresion: BUG-0945 ver handoffs/regressions/BUG-0945-bff-resolve-agent-id-call-center.md (no revertir sin leer)
-	if ctx.Role == "agent" || ctx.Role == "call_center" {
+	if ctx.Role == "agent" || ctx.Role == "call_center" || ctx.Role == "gestor_senior" {
 		return ctx.Sub
 	}
 	if trimmed := strings.TrimSpace(requested); trimmed != "" {

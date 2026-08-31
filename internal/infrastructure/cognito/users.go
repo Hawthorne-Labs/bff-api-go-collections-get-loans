@@ -39,6 +39,7 @@ func (r ProvisioningResult) ToPublicMap() map[string]any {
 
 var systemRoleGroups = map[string]struct{}{
 	"agent": {}, "call_center": {}, "supervisor": {}, "manager": {}, "admin": {}, "auditor": {},
+	"sub_gerente": {}, "especial": {}, "gestor_senior": {},
 }
 
 // UserAPI is the Cognito IdP subset for identity provisioning.

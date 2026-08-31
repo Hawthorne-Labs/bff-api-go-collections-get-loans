@@ -6,10 +6,7 @@ import (
 	"github.com/hawthorne/bff-api-go-collections-get-loans/internal/interface/api/middleware"
 )
 
-var (
-	supervisorAdmin = []string{"supervisor", "manager", "admin"}
-	adminOnly       = []string{"admin"}
-)
+var adminOnly = []string{"admin"}
 
 // RegisterRoutes registers all API routes on the Gin engine.
 func RegisterRoutes(
@@ -39,7 +36,7 @@ func RegisterRoutes(
 
 	readScope := middleware.RequireScope("collections:read")
 	anyRole := middleware.RequireAuthenticatedRole()
-	mandoRoles := middleware.RequireRole(supervisorAdmin...)
+	mandoScope := middleware.RequireMandoCollectionsScope()
 	adminRole := middleware.RequireRole(adminOnly...)
 
 	// Auth internal routes
@@ -70,9 +67,9 @@ func RegisterRoutes(
 		}
 	}
 
-	// Tenant sync status — supervisor/manager/admin (Python _SUPERVISOR_ADMIN)
+	// Tenant sync status — mando scope (ADR-2026-08-30 dynamic roles)
 	adminMando := r.Group("/api/v1/admin")
-	adminMando.Use(readScope, mandoRoles)
+	adminMando.Use(readScope, mandoScope)
 	{
 		adminMando.GET("/tenants", users.ListTenantSyncStatus)
 	}
@@ -99,16 +96,16 @@ func RegisterRoutes(
 		collections.GET("/loans/:loanId/statement", loans.GetLoanStatement)
 	}
 
-	// At-risk + strategy — supervisor/manager/admin (Python _SUPERVISOR_ADMIN)
+	// At-risk clients — mando scope
 	mandoCollections := r.Group("/api/v1/collections")
-	mandoCollections.Use(readScope, mandoRoles)
+	mandoCollections.Use(readScope, mandoScope)
 	{
 		mandoCollections.GET("/clients/at-risk", clients.ListAtRisk)
 	}
 
-	// Strategy routes — supervisor/manager/admin (Python _SUPERVISOR_ADMIN)
+	// Strategy routes — mando scope
 	strategyGroup := r.Group("/api/v1/collections/strategy")
-	strategyGroup.Use(readScope, mandoRoles)
+	strategyGroup.Use(readScope, mandoScope)
 	{
 		strategyGroup.GET("/segmentation", strategy.GetSegmentation)
 		strategyGroup.GET("/assignments", strategy.ListAssignments)
