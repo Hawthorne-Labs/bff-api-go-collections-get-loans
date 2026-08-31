@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/hawthorne/bff-api-go-collections-get-loans/internal/domain"
@@ -64,15 +65,16 @@ func (u *UsersUsecase) CreateUser(ctx context.Context, traceID, tenantID, actorE
 	if err != nil {
 		return nil, domain.NewHTTPBusinessError(502, domain.UserCreateFailed, "conflicto en procesar solicitud de alta de cliente")
 	}
-	identity, err := u.identity.AdminSyncUser(ctx,
-		strField(body, "email"),
-		strField(body, "nombre"),
-		strField(body, "rol"),
-		true,
-	)
-	if err != nil {
-		return nil, domain.NewHTTPBusinessError(502, domain.UserCreateFailed, "conflicto en procesar solicitud de alta de cliente")
-	}
+		identity, err := u.identity.AdminSyncUser(ctx,
+			strField(body, "email"),
+			strField(body, "nombre"),
+			strField(body, "rol"),
+			true,
+		)
+		if err != nil {
+			log.Printf("identity sync failed on create err_type=%T err=%v", err, err)
+			return nil, domain.NewHTTPBusinessError(502, domain.UserCreateFailed, "conflicto en procesar solicitud de alta de cliente")
+		}
 	activated, err := u.core.UpdateUser(ctx, userID, traceID, tenantID, actorEmail, mutableBody(body, true, ""))
 	if err != nil {
 		return nil, err
@@ -115,15 +117,17 @@ func (u *UsersUsecase) UpdateUser(ctx context.Context, userID, traceID, tenantID
 	if err != nil {
 		return nil, err
 	}
-	if emailChanged && currentEmail != "" {
-		if _, err := u.identity.AdminSyncUser(ctx, currentEmail, strField(body, "nombre"), strField(body, "rol"), false); err != nil {
+		if emailChanged && currentEmail != "" {
+			if _, err := u.identity.AdminSyncUser(ctx, currentEmail, strField(body, "nombre"), strField(body, "rol"), false); err != nil {
+				log.Printf("identity sync failed on email deactivate err_type=%T err=%v", err, err)
+				return nil, domain.NewHTTPBusinessError(502, domain.UserCreateFailed, "No se pudo actualizar el usuario.")
+			}
+		}
+		identity, err := u.identity.AdminSyncUser(ctx, desiredEmail, strField(body, "nombre"), strField(body, "rol"), desiredActive)
+		if err != nil {
+			log.Printf("identity sync failed on update err_type=%T err=%v", err, err)
 			return nil, domain.NewHTTPBusinessError(502, domain.UserCreateFailed, "No se pudo actualizar el usuario.")
 		}
-	}
-	identity, err := u.identity.AdminSyncUser(ctx, desiredEmail, strField(body, "nombre"), strField(body, "rol"), desiredActive)
-	if err != nil {
-		return nil, domain.NewHTTPBusinessError(502, domain.UserCreateFailed, "No se pudo actualizar el usuario.")
-	}
 	if !desiredActive {
 		out := copyMap(staged)
 		out["cognito"] = identity.ToPublicMap()

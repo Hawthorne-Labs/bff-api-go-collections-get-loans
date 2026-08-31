@@ -10,12 +10,14 @@ import (
 )
 
 type fakeUserAPI struct {
-	getByAlias map[string]*cognitoidentityprovider.AdminGetUserOutput
-	disableUsernames []string
-	enableUsernames  []string
-	updateUsernames  []string
+	getByAlias           map[string]*cognitoidentityprovider.AdminGetUserOutput
+	disableUsernames     []string
+	enableUsernames      []string
+	updateUsernames      []string
 	setPasswordUsernames []string
-	groups           map[string][]string
+	groups               map[string][]string
+	createGroupErr       error
+	addGroupCalls        []string
 }
 
 func (f *fakeUserAPI) AdminGetUser(_ context.Context, params *cognitoidentityprovider.AdminGetUserInput, _ ...func(*cognitoidentityprovider.Options)) (*cognitoidentityprovider.AdminGetUserOutput, error) {
@@ -59,7 +61,8 @@ func (f *fakeUserAPI) AdminListGroupsForUser(_ context.Context, params *cognitoi
 	return &cognitoidentityprovider.AdminListGroupsForUserOutput{Groups: groups}, nil
 }
 
-func (f *fakeUserAPI) AdminAddUserToGroup(context.Context, *cognitoidentityprovider.AdminAddUserToGroupInput, ...func(*cognitoidentityprovider.Options)) (*cognitoidentityprovider.AdminAddUserToGroupOutput, error) {
+func (f *fakeUserAPI) AdminAddUserToGroup(_ context.Context, params *cognitoidentityprovider.AdminAddUserToGroupInput, _ ...func(*cognitoidentityprovider.Options)) (*cognitoidentityprovider.AdminAddUserToGroupOutput, error) {
+	f.addGroupCalls = append(f.addGroupCalls, aws.ToString(params.GroupName))
 	return &cognitoidentityprovider.AdminAddUserToGroupOutput{}, nil
 }
 
@@ -68,6 +71,9 @@ func (f *fakeUserAPI) AdminRemoveUserFromGroup(context.Context, *cognitoidentity
 }
 
 func (f *fakeUserAPI) CreateGroup(context.Context, *cognitoidentityprovider.CreateGroupInput, ...func(*cognitoidentityprovider.Options)) (*cognitoidentityprovider.CreateGroupOutput, error) {
+	if f.createGroupErr != nil {
+		return nil, f.createGroupErr
+	}
 	return &cognitoidentityprovider.CreateGroupOutput{}, nil
 }
 
@@ -94,6 +100,21 @@ func TestAdminSyncUserDisableUsesResolvedUUIDUsername(t *testing.T) {
 	}
 	if len(api.updateUsernames) != 1 || api.updateUsernames[0] != uuid {
 		t.Fatalf("update usernames=%v want [%s]", api.updateUsernames, uuid)
+	}
+}
+
+func TestReconcileRoleGroupContinuesWhenCreateGroupAccessDenied(t *testing.T) {
+	const uuid = "a1dbb530-f0f1-7036-9e9d-78c91b09cee6"
+	api := &fakeUserAPI{
+		groups:         map[string][]string{uuid: {}},
+		createGroupErr: stubAPIError{code: "AccessDeniedException"},
+	}
+	client := NewUserClientWithAPI(api, "pool-1")
+	if err := client.reconcileRoleGroup(context.Background(), uuid, "admin"); err != nil {
+		t.Fatalf("reconcileRoleGroup: %v", err)
+	}
+	if len(api.addGroupCalls) != 1 || api.addGroupCalls[0] != "admin" {
+		t.Fatalf("add group calls=%v want [admin]", api.addGroupCalls)
 	}
 }
 

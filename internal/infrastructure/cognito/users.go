@@ -276,7 +276,17 @@ func (c *UserClient) reconcileRoleGroup(ctx context.Context, email, role string)
 		UserPoolId: aws.String(c.poolID),
 	}); err != nil {
 		var apiErr smithy.APIError
-		if !errors.As(err, &apiErr) || apiErr.ErrorCode() != "GroupExistsException" {
+		if !errors.As(err, &apiErr) {
+			return err
+		}
+		// anti-regresion: BUG-1028 — CreateGroup may be denied by task IAM while the
+		// group already exists; continue to AdminAddUserToGroup rather than 502.
+		switch apiErr.ErrorCode() {
+		case "GroupExistsException", "AccessDeniedException", "NotAuthorizedException":
+			if apiErr.ErrorCode() != "GroupExistsException" {
+				log.Printf("cognito create group skipped role=%s error_type=%s", role, apiErr.ErrorCode())
+			}
+		default:
 			return err
 		}
 	}
