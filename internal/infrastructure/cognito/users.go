@@ -94,7 +94,7 @@ func (c *UserClient) AdminSyncUser(ctx context.Context, email, name, role string
 	}
 	group := normalizedRole
 
-	exists, err := c.userExists(ctx, normalizedEmail)
+	cognitoUsername, exists, err := c.resolveUsername(ctx, normalizedEmail)
 	if err != nil {
 		return ProvisioningResult{}, err
 	}
@@ -102,10 +102,12 @@ func (c *UserClient) AdminSyncUser(ctx context.Context, email, name, role string
 		return ProvisioningResult{Provisioned: false, Status: "absent_disabled", Group: &group}, nil
 	}
 	if !active && exists {
+		// anti-regresion: BUG-1027 — pool usernames are UUIDs; disable must use the
+		// resolved Username from AdminGetUser, never the suffixed email alias.
 		suffixed := deactivatedUsername(normalizedEmail)
 		if _, err := c.client.AdminUpdateUserAttributes(ctx, &cognitoidentityprovider.AdminUpdateUserAttributesInput{
 			UserPoolId: aws.String(c.poolID),
-			Username:   aws.String(normalizedEmail),
+			Username:   aws.String(cognitoUsername),
 			UserAttributes: []types.AttributeType{
 				{Name: aws.String("email"), Value: aws.String(suffixed)},
 				{Name: aws.String("email_verified"), Value: aws.String("true")},
@@ -115,7 +117,7 @@ func (c *UserClient) AdminSyncUser(ctx context.Context, email, name, role string
 		}
 		if _, err := c.client.AdminDisableUser(ctx, &cognitoidentityprovider.AdminDisableUserInput{
 			UserPoolId: aws.String(c.poolID),
-			Username:   aws.String(suffixed),
+			Username:   aws.String(cognitoUsername),
 		}); err != nil {
 			return ProvisioningResult{}, err
 		}
@@ -133,21 +135,28 @@ func (c *UserClient) AdminSyncUser(ctx context.Context, email, name, role string
 		if pwd != "" {
 			temporaryPassword = &pwd
 		}
+		cognitoUsername, exists, err = c.resolveUsername(ctx, normalizedEmail)
+		if err != nil {
+			return ProvisioningResult{}, err
+		}
+		if !exists {
+			cognitoUsername = normalizedEmail
+		}
 	}
 
 	if _, err := c.client.AdminUpdateUserAttributes(ctx, &cognitoidentityprovider.AdminUpdateUserAttributesInput{
 		UserPoolId:     aws.String(c.poolID),
-		Username:       aws.String(normalizedEmail),
+		Username:       aws.String(cognitoUsername),
 		UserAttributes: identityAttributes(normalizedEmail, normalizedName, normalizedRole),
 	}); err != nil {
 		return ProvisioningResult{}, err
 	}
-	if err := c.reconcileRoleGroup(ctx, normalizedEmail, normalizedRole); err != nil {
+	if err := c.reconcileRoleGroup(ctx, cognitoUsername, normalizedRole); err != nil {
 		return ProvisioningResult{}, err
 	}
 	if _, err := c.client.AdminEnableUser(ctx, &cognitoidentityprovider.AdminEnableUserInput{
 		UserPoolId: aws.String(c.poolID),
-		Username:   aws.String(normalizedEmail),
+		Username:   aws.String(cognitoUsername),
 	}); err != nil {
 		return ProvisioningResult{}, err
 	}
@@ -193,10 +202,17 @@ func (c *UserClient) setTemporaryPassword(ctx context.Context, email string) (Pr
 	if normalizedEmail == "" {
 		return ProvisioningResult{}, fmt.Errorf("invalid email")
 	}
+	cognitoUsername, exists, err := c.resolveUsername(ctx, normalizedEmail)
+	if err != nil {
+		return ProvisioningResult{}, err
+	}
+	if !exists {
+		return ProvisioningResult{}, &types.UserNotFoundException{Message: aws.String("user not found")}
+	}
 	pwd := generateTempPassword()
 	if _, err := c.client.AdminSetUserPassword(ctx, &cognitoidentityprovider.AdminSetUserPasswordInput{
 		UserPoolId: aws.String(c.poolID),
-		Username:   aws.String(normalizedEmail),
+		Username:   aws.String(cognitoUsername),
 		Password:   aws.String(pwd),
 		Permanent:  false,
 	}); err != nil {
@@ -211,17 +227,28 @@ func (c *UserClient) setTemporaryPassword(ctx context.Context, email string) (Pr
 }
 
 func (c *UserClient) userExists(ctx context.Context, email string) (bool, error) {
-	_, err := c.client.AdminGetUser(ctx, &cognitoidentityprovider.AdminGetUserInput{
+	_, exists, err := c.resolveUsername(ctx, email)
+	return exists, err
+}
+
+// resolveUsername looks up Cognito by email alias and returns the pool Username
+// (often a UUID). anti-regresion: BUG-1027
+func (c *UserClient) resolveUsername(ctx context.Context, email string) (string, bool, error) {
+	out, err := c.client.AdminGetUser(ctx, &cognitoidentityprovider.AdminGetUserInput{
 		UserPoolId: aws.String(c.poolID),
 		Username:   aws.String(email),
 	})
 	if err == nil {
-		return true, nil
+		username := strings.TrimSpace(aws.ToString(out.Username))
+		if username == "" {
+			username = email
+		}
+		return username, true, nil
 	}
 	if isUserNotFound(err) {
-		return false, nil
+		return "", false, nil
 	}
-	return false, err
+	return "", false, err
 }
 
 func (c *UserClient) adminCreateUser(ctx context.Context, email, name, role string) (string, bool, error) {
