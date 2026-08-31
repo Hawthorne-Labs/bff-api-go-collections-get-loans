@@ -59,6 +59,7 @@ func RegisterRoutes(
 
 		if roles != nil {
 			admin.GET("/roles", roles.ListRoles)
+			admin.GET("/roles/:code/audit-log", roles.ListRoleAuditLog)
 			admin.GET("/roles/:code", roles.GetRole)
 			admin.POST("/roles", roles.CreateRole)
 			admin.PATCH("/roles/:code", roles.UpdateRole)

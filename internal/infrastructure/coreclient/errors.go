@@ -15,33 +15,45 @@ func translateCoreError(statusCode int, body []byte) *domain.BusinessError {
 	switch statusCode {
 	case http.StatusGatewayTimeout:
 		return &domain.BusinessError{
-			Code:    domain.LoanDetailTimeout,
-			Message: detail,
+			Code:       domain.LoanDetailTimeout,
+			Message:    detail,
+			HTTPStatus: http.StatusGatewayTimeout,
 		}
 	case http.StatusNotFound:
 		return &domain.BusinessError{
-			Code:    code,
-			Message: detail,
+			Code:       code,
+			Message:    detail,
+			HTTPStatus: http.StatusNotFound,
 		}
 	case http.StatusConflict:
 		return &domain.BusinessError{
-			Code:    code,
-			Message: detail,
+			Code:       code,
+			Message:    detail,
+			HTTPStatus: http.StatusConflict,
 		}
 	case http.StatusForbidden:
 		return &domain.BusinessError{
-			Code:    domain.AccessDenied,
-			Message: "No tiene permisos para realizar esta acción.",
+			Code:       domain.AccessDenied,
+			Message:    "No tiene permisos para realizar esta acción.",
+			HTTPStatus: http.StatusForbidden,
 		}
 	case http.StatusBadRequest:
 		return &domain.BusinessError{
-			Code:    code,
-			Message: detail,
+			Code:       code,
+			Message:    detail,
+			HTTPStatus: http.StatusBadRequest,
+		}
+	case http.StatusUnprocessableEntity:
+		return &domain.BusinessError{
+			Code:       code,
+			Message:    detail,
+			HTTPStatus: http.StatusUnprocessableEntity,
 		}
 	default:
 		return &domain.BusinessError{
-			Code:    domain.CollectionsRequestFailed,
-			Message: detail,
+			Code:       domain.CollectionsRequestFailed,
+			Message:    detail,
+			HTTPStatus: statusCode,
 		}
 	}
 }
@@ -89,7 +101,10 @@ func parseCoreErrorCode(body []byte) int {
 		return domain.CollectionsRequestFailed
 	}
 
-	// Check for error_code field
+	// Check for error_code field (Core may send string codes such as ROLE_EXISTS)
+	if codeStr, ok := result["error_code"].(string); ok {
+		return mapCoreStringErrorCode(codeStr)
+	}
 	if code, ok := result["error_code"].(float64); ok {
 		return int(code)
 	}
@@ -112,4 +127,17 @@ func parseCoreErrorCode(body []byte) int {
 	}
 
 	return domain.CollectionsRequestFailed
+}
+
+func mapCoreStringErrorCode(code string) int {
+	switch code {
+	case "ROLE_EXISTS", "SYSTEM_ROLE", "ROLE_NOT_FOUND", "INVALID_ROLE":
+		return domain.RoleMutationFailed
+	case "ADMIN_REQUIRED":
+		return domain.AccessDenied
+	case "INVALID_REQUEST":
+		return domain.ValidationFailed
+	default:
+		return domain.CollectionsRequestFailed
+	}
 }

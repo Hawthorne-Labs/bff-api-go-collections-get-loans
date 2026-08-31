@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/hawthorne/bff-api-go-collections-get-loans/internal/infrastructure/config"
@@ -626,4 +627,17 @@ func (c *CoreClient) ListPermissions(ctx context.Context, traceID, tenantID, use
 		params["module"] = module
 	}
 	return c.get(ctx, "/internal/v1/permissions", headers, params)
+}
+
+// ListRoleAuditLog lists append-only audit rows for one role (admin).
+func (c *CoreClient) ListRoleAuditLog(ctx context.Context, code, traceID, tenantID, userEmail string, limit int) (map[string]any, error) {
+	headers, err := c.authHeaders(ctx, traceID, tenantID, userEmail)
+	if err != nil {
+		return nil, err
+	}
+	params := map[string]string{}
+	if limit > 0 {
+		params["limit"] = strconv.Itoa(limit)
+	}
+	return c.get(ctx, "/internal/v1/roles/"+code+"/audit-log", headers, params)
 }

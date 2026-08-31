@@ -64,6 +64,9 @@ func (f *fakeRoleCore) ReplaceRolePermissions(context.Context, string, string, s
 func (f *fakeRoleCore) ListPermissions(context.Context, string, string, string, string) (map[string]any, error) {
 	return nil, nil
 }
+func (f *fakeRoleCore) ListRoleAuditLog(context.Context, string, string, string, string, int) (map[string]any, error) {
+	return map[string]any{"items": []any{}}, nil
+}
 
 func TestCreateRoleProvisionsCognitoGroup(t *testing.T) {
 	core := &fakeRoleCore{}

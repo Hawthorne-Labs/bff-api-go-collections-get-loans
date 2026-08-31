@@ -16,6 +16,7 @@ type RoleCoreClient interface {
 	UpdateRole(ctx context.Context, code, traceID, tenantID, userEmail string, body map[string]any) (map[string]any, error)
 	ReplaceRolePermissions(ctx context.Context, code, traceID, tenantID, userEmail string, body map[string]any) (map[string]any, error)
 	ListPermissions(ctx context.Context, traceID, tenantID, userEmail, module string) (map[string]any, error)
+	ListRoleAuditLog(ctx context.Context, code, traceID, tenantID, userEmail string, limit int) (map[string]any, error)
 }
 
 // RoleGroupProvisioner creates Cognito groups for dynamic roles.
@@ -87,6 +88,11 @@ func (u *RolesUsecase) ReplaceRolePermissions(ctx context.Context, code, traceID
 // ListPermissions proxies Core permission catalog.
 func (u *RolesUsecase) ListPermissions(ctx context.Context, traceID, tenantID, userEmail, module string) (map[string]any, error) {
 	return u.core.ListPermissions(ctx, traceID, tenantID, userEmail, module)
+}
+
+// ListRoleAuditLog proxies Core role audit history.
+func (u *RolesUsecase) ListRoleAuditLog(ctx context.Context, code, traceID, tenantID, userEmail string, limit int) (map[string]any, error) {
+	return u.core.ListRoleAuditLog(ctx, code, traceID, tenantID, userEmail, limit)
 }
 
 func withCognitoMeta(created map[string]any, code string, groupCreated bool) map[string]any {

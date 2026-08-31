@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -141,6 +142,27 @@ func (h *RolesHandler) ListPermissions(c *gin.Context) {
 	result, err := h.roles.ListPermissions(c.Request.Context(), traceID, tenantID, ctx.Email, c.Query("module"))
 	if err != nil {
 		writeBusinessOrFallback(c, err, domain.RolesListFailed, "No se pudo cargar el catálogo de permisos.")
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// ListRoleAuditLog handles GET /api/v1/admin/roles/:code/audit-log.
+func (h *RolesHandler) ListRoleAuditLog(c *gin.Context) {
+	ctx, ok := h.requireAdmin(c)
+	if !ok {
+		return
+	}
+	limit := 50
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			limit = parsed
+		}
+	}
+	traceID, tenantID := h.requestMeta(c)
+	result, err := h.roles.ListRoleAuditLog(c.Request.Context(), c.Param("code"), traceID, tenantID, ctx.Email, limit)
+	if err != nil {
+		writeBusinessOrFallback(c, err, domain.RolesListFailed, "No se pudo cargar la bitácora del rol.")
 		return
 	}
 	c.JSON(http.StatusOK, result)
