@@ -53,10 +53,10 @@ func (h *StrategyHandler) ListAssignments(c *gin.Context) {
 	traceID, _ := c.Get("trace_id")
 	tenantID, _ := c.Get("tenant_id")
 
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	if limit < 1 || limit > 100 {
-		limit = 50
+		limit = 20
 	}
 
 	marca := c.Query("marca")

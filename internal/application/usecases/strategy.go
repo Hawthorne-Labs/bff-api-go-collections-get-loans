@@ -11,7 +11,9 @@ import (
 	"github.com/hawthorne/bff-api-go-collections-get-loans/internal/infrastructure/coreclient"
 )
 
-const segmentationCacheTTL = 30 * time.Second
+const segmentationCacheTTL = 2 * time.Minute
+
+var segmentationCoreGate sync.Mutex
 
 type segmentationCacheEntry struct {
 	at   time.Time
@@ -36,6 +38,11 @@ func NewStrategyUsecase(core *coreclient.CoreClient) *StrategyUsecase {
 // GetSegmentation gets live account counts per priority bucket by marca.
 func (u *StrategyUsecase) GetSegmentation(ctx context.Context, traceID, tenantID, userEmail, marca string) (map[string]any, error) {
 	key := strings.TrimSpace(marca)
+	if cached, ok := u.getSegmentationCache(key); ok {
+		return cached, nil
+	}
+	segmentationCoreGate.Lock()
+	defer segmentationCoreGate.Unlock()
 	if cached, ok := u.getSegmentationCache(key); ok {
 		return cached, nil
 	}
