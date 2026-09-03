@@ -1,6 +1,6 @@
 module github.com/hawthorne/bff-api-go-collections-get-loans
 
-go 1.26.5
+go 1.27.1
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.36.3

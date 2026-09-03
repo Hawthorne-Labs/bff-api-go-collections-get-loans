@@ -3,7 +3,7 @@
 #   local: DOCKER_BUILDKIT=1 docker build --ssh default -t <name> .
 #   CI:    docker build --secret id=GIT_AUTH_USER,env=GIT_AUTH_USER \
 #                       --secret id=GIT_AUTH_TOKEN,env=GIT_AUTH_TOKEN -t <name> .
-FROM --platform=$BUILDPLATFORM golang:1.26.5-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.1-bookworm AS builder
 ARG TARGETARCH
 ENV CGO_ENABLED=0 \
     GOTOOLCHAIN=local \

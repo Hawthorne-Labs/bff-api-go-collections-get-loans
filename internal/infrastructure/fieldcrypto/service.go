@@ -36,28 +36,30 @@ func CountScalars(payload any) int {
 
 // FieldCryptoService encrypts/decrypts scalar JSON values with AES-256-GCM.
 type FieldCryptoService struct {
-	keys KeyProvider
+	keys    KeyProvider
+	newAEAD func([]byte) (cipher.AEAD, error)
 }
 
 // NewFieldCryptoService creates a service bound to a key provider.
 func NewFieldCryptoService(keys KeyProvider) *FieldCryptoService {
-	return &FieldCryptoService{keys: keys}
+	return &FieldCryptoService{keys: keys, newAEAD: newAESGCM}
 }
 
-func (s *FieldCryptoService) encryptWithKey(kid string, key, nonce []byte, value any) (string, error) {
+// anti-regresion: BUG-1075 ver handoffs/regressions/BUG-1075-fle-aead-por-respuesta.md (no revertir sin leer)
+func newAESGCM(key []byte) (cipher.AEAD, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
+func encryptWithAEAD(kid string, aead cipher.AEAD, additionalData, nonce []byte, value any) (string, error) {
 	plain, err := EncodeValue(value)
 	if err != nil {
 		return "", err
 	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", NewEncryptionFailed()
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", NewEncryptionFailed()
-	}
-	sealed := gcm.Seal(nil, nonce, plain, aad(kid))
+	sealed := aead.Seal(nil, nonce, plain, additionalData)
 	if len(sealed) < 16 {
 		return "", NewEncryptionFailed()
 	}
@@ -71,11 +73,7 @@ func (s *FieldCryptoService) encryptWithKey(kid string, key, nonce []byte, value
 }
 
 func (s *FieldCryptoService) decryptWithKey(env *Envelope, key []byte) (any, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, NewInvalidTag()
-	}
-	gcm, err := cipher.NewGCM(block)
+	gcm, err := s.newAEAD(key)
 	if err != nil {
 		return nil, NewInvalidTag()
 	}
@@ -100,7 +98,11 @@ func (s *FieldCryptoService) EncryptValue(value any, ctx CryptoContext) (string,
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", NewEncryptionFailed()
 	}
-	return s.encryptWithKey(kid, key, nonce, value)
+	gcm, err := s.newAEAD(key)
+	if err != nil {
+		return "", NewEncryptionFailed()
+	}
+	return encryptWithAEAD(kid, gcm, aad(kid), nonce, value)
 }
 
 // DecryptValue decrypts one enc:v1 scalar.
@@ -126,15 +128,19 @@ func (s *FieldCryptoService) EncryptJSON(payload any, ctx CryptoContext) (any, e
 	if err != nil {
 		return nil, err
 	}
-	return s.encryptNode(payload, kid, key)
+	gcm, err := s.newAEAD(key)
+	if err != nil {
+		return nil, NewEncryptionFailed()
+	}
+	return s.encryptNode(payload, kid, gcm, aad(kid))
 }
 
-func (s *FieldCryptoService) encryptNode(value any, kid string, key []byte) (any, error) {
+func (s *FieldCryptoService) encryptNode(value any, kid string, gcm cipher.AEAD, additionalData []byte) (any, error) {
 	switch v := value.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(v))
 		for k, child := range v {
-			encrypted, err := s.encryptNode(child, kid, key)
+			encrypted, err := s.encryptNode(child, kid, gcm, additionalData)
 			if err != nil {
 				return nil, err
 			}
@@ -144,7 +150,7 @@ func (s *FieldCryptoService) encryptNode(value any, kid string, key []byte) (any
 	case []any:
 		out := make([]any, len(v))
 		for i, child := range v {
-			encrypted, err := s.encryptNode(child, kid, key)
+			encrypted, err := s.encryptNode(child, kid, gcm, additionalData)
 			if err != nil {
 				return nil, err
 			}
@@ -156,7 +162,7 @@ func (s *FieldCryptoService) encryptNode(value any, kid string, key []byte) (any
 		if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 			return nil, NewEncryptionFailed()
 		}
-		return s.encryptWithKey(kid, key, nonce, value)
+		return encryptWithAEAD(kid, gcm, additionalData, nonce, value)
 	}
 }
 
