@@ -66,6 +66,7 @@ func (h *LoansHandler) ListLoans(c *gin.Context) {
 		ClientID:       c.Query("client_id"),
 		ClientIdentity: c.Query("client_identity"),
 		BranchTenant:   c.Query("branch_tenant"),
+		BranchName:     c.Query("branch_name"),
 		View:           c.Query("view"),
 		Limit:          limit,
 		Offset:         offset,

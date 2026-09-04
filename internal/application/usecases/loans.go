@@ -54,6 +54,7 @@ type ListParams struct {
 	ClientID       string
 	ClientIdentity string
 	BranchTenant   string
+	BranchName     string
 	View           string
 	Limit          int
 	Offset         int
@@ -98,6 +99,9 @@ func (u *LoansUsecase) ListLoans(ctx context.Context, traceID, tenantID, userEma
 	}
 	if params.BranchTenant != "" {
 		queryParams["branch_tenant"] = params.BranchTenant
+	}
+	if params.BranchName != "" {
+		queryParams["branch_name"] = params.BranchName
 	}
 	if params.View != "" {
 		queryParams["view"] = params.View
