@@ -247,3 +247,31 @@ func TestLegacyPuestoRolesResolveScopes(t *testing.T) {
 		})
 	}
 }
+
+func TestCustomCognitoGroupResolvesRoleAndDefaultScopes(t *testing.T) {
+	// anti-regresion: BUG-1118/BUG-1120 ver handoffs/regressions.md (no revertir sin leer)
+	// Custom roles (non-system Cognito groups) must resolve to a non-empty role
+	// with default scopes; otherwise /auth/permissions returns 403 and login breaks.
+	key := testRSA(t)
+	validator := testValidator(t, key, nil, nil)
+	token := mintAccessToken(t, key, "test-key", jwt.MapClaims{
+		"email":          "oficial.creditos@hawthorne.local",
+		"cognito:groups": []string{"oficial_creditos"},
+	})
+	claims, err := validator.Validate(context.Background(), token)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if claims.Role != "oficial_creditos" {
+		t.Fatalf("role=%q want oficial_creditos", claims.Role)
+	}
+	for _, scope := range []string{
+		"collections:read", "collections:write",
+		"collections:read:own", "collections:write:own",
+		"notifications:read", "notifications:write",
+	} {
+		if _, ok := claims.Scopes[scope]; !ok {
+			t.Fatalf("expected %q scope for custom role", scope)
+		}
+	}
+}
