@@ -25,6 +25,12 @@ var roleScopes = map[string][]string{
 	"auditor":       {"collections:read"},
 }
 
+// anti-regresion: BUG-1118 — default scopes for custom/dynamic roles.
+var customRoleDefaultScopes = []string{
+	"collections:read", "collections:write", "collections:read:own", "collections:write:own",
+	"notifications:read", "notifications:write",
+}
+
 // anti-regresion: BUG-1018 ver handoffs/regressions.md (no revertir sin leer)
 var rolePriority = []string{
 	"admin", "manager", "sub_gerente", "supervisor", "especial",
@@ -150,11 +156,29 @@ func (v *CognitoJwtValidator) Validate(ctx context.Context, tokenString string) 
 			break
 		}
 	}
+	// anti-regresion: BUG-1118 — custom roles are not in rolePriority.
+	if role == "" {
+		systemRoleSet := make(map[string]struct{}, len(rolePriority))
+		for _, r := range rolePriority {
+			systemRoleSet[r] = struct{}{}
+		}
+		for group := range groups {
+			if _, isSystem := systemRoleSet[group]; !isSystem {
+				role = group
+				break
+			}
+		}
+	}
 	scopes := map[string]struct{}{}
 	for _, scope := range strings.Fields(claims.Scope) {
 		scopes[scope] = struct{}{}
 	}
-	for _, scope := range roleScopes[role] {
+	// anti-regresion: BUG-1118 — custom roles are not in roleScopes.
+	roleScopeList := roleScopes[role]
+	if len(roleScopeList) == 0 && role != "" {
+		roleScopeList = customRoleDefaultScopes
+	}
+	for _, scope := range roleScopeList {
 		scopes[scope] = struct{}{}
 	}
 	email := strings.TrimSpace(claims.Email)
