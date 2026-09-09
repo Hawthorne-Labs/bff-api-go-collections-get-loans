@@ -499,6 +499,24 @@ func (c *CoreClient) ListTenantSyncStatus(ctx context.Context, traceID, tenantID
 	return c.get(ctx, "/internal/v1/admin/tenants", headers, nil)
 }
 
+// ListTenantSettings gets configurable settings for all active tenants.
+func (c *CoreClient) ListTenantSettings(ctx context.Context, traceID, tenantID, userEmail string) (map[string]any, error) {
+	headers, err := c.authHeaders(ctx, traceID, tenantID, userEmail)
+	if err != nil {
+		return nil, err
+	}
+	return c.get(ctx, "/internal/v1/admin/tenant-settings", headers, nil)
+}
+
+// UpdateTenantCooldownDays updates the assignment cooldown for a single tenant.
+func (c *CoreClient) UpdateTenantCooldownDays(ctx context.Context, traceID, tenantID, userEmail, settingID string, body map[string]any) (map[string]any, error) {
+	headers, err := c.authHeaders(ctx, traceID, tenantID, userEmail)
+	if err != nil {
+		return nil, err
+	}
+	return c.patch(ctx, "/internal/v1/admin/tenant-settings/"+settingID, headers, body)
+}
+
 // GetStrategySegmentation gets live account counts per priority bucket.
 func (c *CoreClient) GetStrategySegmentation(ctx context.Context, traceID, tenantID, userEmail, marca string) (map[string]any, error) {
 	headers, err := c.authHeaders(ctx, traceID, tenantID, userEmail)

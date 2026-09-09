@@ -31,6 +31,8 @@ type usersCore interface {
 	GetMyPermissions(ctx context.Context, traceID, tenantID, userEmail string) (map[string]any, error)
 	ListMyTenants(ctx context.Context, traceID, tenantID, userEmail string) (map[string]any, error)
 	ListTenantSyncStatus(ctx context.Context, traceID, tenantID, userEmail string) (map[string]any, error)
+	ListTenantSettings(ctx context.Context, traceID, tenantID, userEmail string) (map[string]any, error)
+	UpdateTenantCooldownDays(ctx context.Context, traceID, tenantID, userEmail, settingID string, body map[string]any) (map[string]any, error)
 }
 
 // UsersUsecase handles user management business logic.
@@ -65,16 +67,16 @@ func (u *UsersUsecase) CreateUser(ctx context.Context, traceID, tenantID, actorE
 	if err != nil {
 		return nil, domain.NewHTTPBusinessError(502, domain.UserCreateFailed, "conflicto en procesar solicitud de alta de cliente")
 	}
-		identity, err := u.identity.AdminSyncUser(ctx,
-			strField(body, "email"),
-			strField(body, "nombre"),
-			strField(body, "rol"),
-			true,
-		)
-		if err != nil {
-			log.Printf("identity sync failed on create err_type=%T err=%v", err, err)
-			return nil, domain.NewHTTPBusinessError(502, domain.UserCreateFailed, "conflicto en procesar solicitud de alta de cliente")
-		}
+	identity, err := u.identity.AdminSyncUser(ctx,
+		strField(body, "email"),
+		strField(body, "nombre"),
+		strField(body, "rol"),
+		true,
+	)
+	if err != nil {
+		log.Printf("identity sync failed on create err_type=%T err=%v", err, err)
+		return nil, domain.NewHTTPBusinessError(502, domain.UserCreateFailed, "conflicto en procesar solicitud de alta de cliente")
+	}
 	activated, err := u.core.UpdateUser(ctx, userID, traceID, tenantID, actorEmail, mutableBody(body, true, ""))
 	if err != nil {
 		return nil, err
@@ -117,17 +119,17 @@ func (u *UsersUsecase) UpdateUser(ctx context.Context, userID, traceID, tenantID
 	if err != nil {
 		return nil, err
 	}
-		if emailChanged && currentEmail != "" {
-			if _, err := u.identity.AdminSyncUser(ctx, currentEmail, strField(body, "nombre"), strField(body, "rol"), false); err != nil {
-				log.Printf("identity sync failed on email deactivate err_type=%T err=%v", err, err)
-				return nil, domain.NewHTTPBusinessError(502, domain.UserCreateFailed, "No se pudo actualizar el usuario.")
-			}
-		}
-		identity, err := u.identity.AdminSyncUser(ctx, desiredEmail, strField(body, "nombre"), strField(body, "rol"), desiredActive)
-		if err != nil {
-			log.Printf("identity sync failed on update err_type=%T err=%v", err, err)
+	if emailChanged && currentEmail != "" {
+		if _, err := u.identity.AdminSyncUser(ctx, currentEmail, strField(body, "nombre"), strField(body, "rol"), false); err != nil {
+			log.Printf("identity sync failed on email deactivate err_type=%T err=%v", err, err)
 			return nil, domain.NewHTTPBusinessError(502, domain.UserCreateFailed, "No se pudo actualizar el usuario.")
 		}
+	}
+	identity, err := u.identity.AdminSyncUser(ctx, desiredEmail, strField(body, "nombre"), strField(body, "rol"), desiredActive)
+	if err != nil {
+		log.Printf("identity sync failed on update err_type=%T err=%v", err, err)
+		return nil, domain.NewHTTPBusinessError(502, domain.UserCreateFailed, "No se pudo actualizar el usuario.")
+	}
 	if !desiredActive {
 		out := copyMap(staged)
 		out["cognito"] = identity.ToPublicMap()
@@ -195,6 +197,16 @@ func (u *UsersUsecase) ListMyTenants(ctx context.Context, traceID, tenantID, use
 // ListTenantSyncStatus gets tenant sync status for supervisor, manager, and admin.
 func (u *UsersUsecase) ListTenantSyncStatus(ctx context.Context, traceID, tenantID, userEmail string) (map[string]any, error) {
 	return u.core.ListTenantSyncStatus(ctx, traceID, tenantID, userEmail)
+}
+
+// ListTenantSettings gets configurable settings for all active tenants.
+func (u *UsersUsecase) ListTenantSettings(ctx context.Context, traceID, tenantID, userEmail string) (map[string]any, error) {
+	return u.core.ListTenantSettings(ctx, traceID, tenantID, userEmail)
+}
+
+// UpdateTenantCooldownDays updates the assignment cooldown for a single tenant.
+func (u *UsersUsecase) UpdateTenantCooldownDays(ctx context.Context, traceID, tenantID, userEmail, settingID string, body map[string]any) (map[string]any, error) {
+	return u.core.UpdateTenantCooldownDays(ctx, traceID, tenantID, userEmail, settingID, body)
 }
 
 func (u *UsersUsecase) findUser(ctx context.Context, traceID, tenantID, actorEmail, userID string) (map[string]any, error) {

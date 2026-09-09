@@ -73,6 +73,8 @@ func RegisterRoutes(
 	adminMando.Use(readScope, mandoScope)
 	{
 		adminMando.GET("/tenants", users.ListTenantSyncStatus)
+		adminMando.GET("/tenant-settings", users.ListTenantSettings)
+		adminMando.PATCH("/tenant-settings/:id", users.UpdateTenantCooldown)
 	}
 
 	// Crypto session handshake (local ECDH / FLE)

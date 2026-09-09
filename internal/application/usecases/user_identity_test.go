@@ -40,6 +40,12 @@ func (f *fakeUsersCore) ListMyTenants(context.Context, string, string, string) (
 func (f *fakeUsersCore) ListTenantSyncStatus(context.Context, string, string, string) (map[string]any, error) {
 	return map[string]any{}, nil
 }
+func (f *fakeUsersCore) ListTenantSettings(context.Context, string, string, string) (map[string]any, error) {
+	return map[string]any{"items": []any{}}, nil
+}
+func (f *fakeUsersCore) UpdateTenantCooldownDays(context.Context, string, string, string, string, map[string]any) (map[string]any, error) {
+	return map[string]any{}, nil
+}
 
 func tPanic(msg string) { panic(msg) }
 

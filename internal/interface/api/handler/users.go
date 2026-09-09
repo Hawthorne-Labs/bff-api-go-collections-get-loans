@@ -188,6 +188,44 @@ func (h *UsersHandler) ListTenantSyncStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+// ListTenantSettings handles GET /api/v1/admin/tenant-settings (admin only).
+func (h *UsersHandler) ListTenantSettings(c *gin.Context) {
+	ctx := middleware.GetCognitoContext(c)
+	if ctx == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
+		return
+	}
+	traceID, tenantID := usersTraceTenant(c)
+	result, err := h.users.ListTenantSettings(c.Request.Context(), traceID, tenantID, ctx.Email)
+	if err != nil {
+		writeBusinessOrFallback(c, err, domain.UserTenantsListFailed, "No se pudo cargar la configuración de las marcas.")
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// UpdateTenantCooldown handles PATCH /api/v1/admin/tenant-settings/:id (admin only).
+func (h *UsersHandler) UpdateTenantCooldown(c *gin.Context) {
+	ctx := middleware.GetCognitoContext(c)
+	if ctx == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": map[string]any{"code": domain.InvalidAuthToken, "message": "El token de acceso no es válido."}})
+		return
+	}
+	traceID, tenantID := usersTraceTenant(c)
+	settingID := c.Param("id")
+	var body map[string]any
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": map[string]any{"code": 400, "message": "Solicitud inválida."}})
+		return
+	}
+	result, err := h.users.UpdateTenantCooldownDays(c.Request.Context(), traceID, tenantID, ctx.Email, settingID, body)
+	if err != nil {
+		writeBusinessOrFallback(c, err, domain.UserTenantsListFailed, "No se pudo actualizar la configuración.")
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 // RecordLastLogin handles POST /api/v1/auth/last-login
 func (h *UsersHandler) RecordLastLogin(c *gin.Context) {
 	ctx := middleware.GetCognitoContext(c)
