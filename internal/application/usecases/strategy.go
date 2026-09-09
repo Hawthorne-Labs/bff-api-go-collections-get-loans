@@ -13,7 +13,7 @@ import (
 
 const segmentationCacheTTL = 2 * time.Minute
 
-var segmentationCoreGate sync.Mutex
+var segmentationFetchLocks sync.Map
 
 type segmentationCacheEntry struct {
 	at   time.Time
@@ -41,8 +41,9 @@ func (u *StrategyUsecase) GetSegmentation(ctx context.Context, traceID, tenantID
 	if cached, ok := u.getSegmentationCache(key); ok {
 		return cached, nil
 	}
-	segmentationCoreGate.Lock()
-	defer segmentationCoreGate.Unlock()
+	mu, _ := segmentationFetchLocks.LoadOrStore(key, &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	defer mu.(*sync.Mutex).Unlock()
 	if cached, ok := u.getSegmentationCache(key); ok {
 		return cached, nil
 	}

@@ -115,8 +115,8 @@ func TestValidAccessTokenUsesEmailClaim(t *testing.T) {
 	key := testRSA(t)
 	validator := testValidator(t, key, nil, nil)
 	token := mintAccessToken(t, key, "test-key", jwt.MapClaims{
-		"email":           "agent1@hawthorne.local",
-		"cognito:groups":  []string{"agent"},
+		"email":          "agent1@hawthorne.local",
+		"cognito:groups": []string{"agent"},
 	})
 	claims, err := validator.Validate(context.Background(), token)
 	if err != nil {
