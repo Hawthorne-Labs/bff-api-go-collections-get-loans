@@ -135,7 +135,7 @@ func mapCoreStringErrorCode(code string) int {
 		return domain.RoleMutationFailed
 	case "ADMIN_REQUIRED":
 		return domain.AccessDenied
-	case "INVALID_REQUEST":
+	case "INVALID_REQUEST", "DAILY_CAP_REACHED", "INVALID_DISTRIBUTION", "INVALID_DAYS_PAST_DUE":
 		return domain.ValidationFailed
 	default:
 		return domain.CollectionsRequestFailed
